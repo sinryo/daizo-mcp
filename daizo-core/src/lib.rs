@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 use serde::Deserialize;
+use encoding_rs;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct IndexEntry {
@@ -69,7 +70,8 @@ pub fn build_index(root: &Path, glob_hint: Option<&str>) -> Vec<IndexEntry> {
         .filter_map(|p| {
             let f = File::open(p).ok()?;
             let mut reader = Reader::from_reader(BufReader::new(f));
-            reader.trim_text(true);
+            reader.config_mut().trim_text_start = true;
+            reader.config_mut().trim_text_end = true;
             let mut buf = Vec::new();
             let mut id: Option<String> = None;
             let mut title: Option<String> = None; // from teiHeader/title
@@ -125,11 +127,11 @@ pub fn build_index(root: &Path, glob_hint: Option<&str>) -> Vec<IndexEntry> {
                     }
                     Ok(Event::Text(t)) => {
                         if in_title {
-                            let t = t.unescape().unwrap_or_default().into_owned();
+                            let t = t.decode().unwrap_or_default().into_owned();
                             if !t.trim().is_empty() { title = Some(t); }
                         }
                         // fallback buffers
-                        let tx = t.unescape().unwrap_or_default();
+                        let tx = t.decode().unwrap_or_default();
                         if in_head { head_buf.push_str(&tx); }
                         if in_jhead_title { jhead_buf.push_str(&tx); }
                     }
@@ -173,7 +175,8 @@ pub fn build_cbeta_index(root: &Path) -> Vec<IndexEntry> {
         .filter_map(|p| {
             let f = File::open(p).ok()?;
             let mut reader = Reader::from_reader(BufReader::new(f));
-            reader.trim_text(true);
+            reader.config_mut().trim_text_start = true;
+            reader.config_mut().trim_text_end = true;
             let mut buf = Vec::new();
 
             let mut id: Option<String> = None;
@@ -264,7 +267,7 @@ pub fn build_cbeta_index(root: &Path) -> Vec<IndexEntry> {
                         path_stack.pop();
                     }
                     Ok(Event::Text(t)) => {
-                        let tx = t.unescape().unwrap_or_default();
+                        let tx = t.decode().unwrap_or_default();
                         let s = tx.to_string();
                         if in_title_header && title_header.is_none() && !s.trim().is_empty() { title_header = Some(s.clone()); }
                         if in_author && author.is_none() && !s.trim().is_empty() { author = Some(s.clone()); }
@@ -335,7 +338,7 @@ pub fn build_cbeta_index(root: &Path) -> Vec<IndexEntry> {
 
 // Tipitaka 用: teiHeader が空な場合が多いため、<p rend="..."> 系から書誌情報を抽出してタイトルを構築
 pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
-    // 走査: romn 配下の .xml で .toc.xml は除外
+    // 走査: root 配下の .xml で .toc.xml は除外 (rootは既にromnディレクトリを指している)
     let mut paths: Vec<PathBuf> = Vec::new();
     for e in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
         if e.file_type().is_file() {
@@ -356,68 +359,135 @@ pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
     paths
         .par_iter()
         .filter_map(|p| {
-            let f = File::open(p).ok()?;
-            let mut reader = Reader::from_reader(BufReader::new(f));
-            reader.trim_text(true);
+            // UTF-16 TipitakaファイルをUTF-8で読み込み
+            let content = match std::fs::read(p) {
+                Ok(bytes) => {
+                    // UTF-16 BOMを検出して適切にデコード
+                    if bytes.starts_with(&[0xFF, 0xFE]) {
+                        // UTF-16 LE
+                        match encoding_rs::UTF_16LE.decode(&bytes) {
+                            (decoded, _, false) => decoded.into_owned(),
+                            _ => return None,
+                        }
+                    } else if bytes.starts_with(&[0xFE, 0xFF]) {
+                        // UTF-16 BE  
+                        match encoding_rs::UTF_16BE.decode(&bytes) {
+                            (decoded, _, false) => decoded.into_owned(),
+                            _ => return None,
+                        }
+                    } else {
+                        // UTF-8として読み込み
+                        match String::from_utf8(bytes) {
+                            Ok(s) => s,
+                            Err(_) => return None,
+                        }
+                    }
+                },
+                Err(_) => return None,
+            };
+            
+            let mut reader = Reader::from_str(&content);
+            reader.config_mut().trim_text_start = true;
+            reader.config_mut().trim_text_end = true;
             let mut buf = Vec::new();
-
+            
+            // より正確な構造解析のための変数
             let mut in_p = false;
+            let mut in_head = false;
+            let _in_div = false;
             let mut current_rend: Option<String> = None;
             let mut current_buf = String::new();
-            let mut fields: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-            // also collect first few <head>
-            let mut in_head = false;
             let mut head_buf = String::new();
+            
+            // 構造化データの収集
+            let mut fields: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
             let mut heads: Vec<String> = Vec::new();
-
-            // 対象キー（優先順）
-            let wanted = ["nikaya", "title", "book", "subhead", "subsubhead", "chapter"]; 
+            let mut div_info: Vec<(String, String)> = Vec::new(); // (n, type) pairs
+            
+            // 対象キー（拡張） - gathalastも含める
+            let wanted_p = ["nikaya", "title", "subhead", "subsubhead", "gathalast"];
+            let wanted_head = ["book", "chapter"];
             let mut events_read = 0usize;
-            let max_events = 10_000usize; // 早期終了用
+            let max_events = 50_000usize; // ファイル全体を読むために大きく設定
 
             loop {
                 match reader.read_event_into(&mut buf) {
                     Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                         let name_owned = e.name().as_ref().to_owned();
                         let name = local_name(&name_owned);
+                        
                         if name == b"p" {
                             in_p = true;
                             current_buf.clear();
                             current_rend = attr_val(&e, b"rend").map(|v| v.to_ascii_lowercase());
+                        } else if name == b"head" {
+                            in_head = true;
+                            head_buf.clear();
+                            current_rend = attr_val(&e, b"rend").map(|v| v.to_ascii_lowercase());
+                        } else if name == b"div" {
+                            // div要素の属性を記録
+                            if let (Some(n), Some(type_val)) = (attr_val(&e, b"n"), attr_val(&e, b"type")) {
+                                div_info.push((n.to_string(), type_val.to_string()));
+                            }
                         }
                     }
                     Ok(Event::End(e)) => {
                         let name_owned = e.name().as_ref().to_owned();
                         let name = local_name(&name_owned);
+                        
                         if name == b"p" && in_p {
                             if let Some(rend) = current_rend.take() {
                                 let key = rend.trim().to_string();
                                 let val = current_buf.trim().to_string();
-                                if !val.is_empty() && wanted.contains(&key.as_str()) {
-                                    fields.entry(key).or_insert_with(|| val);
-                                    if fields.len() >= wanted.len() { break; }
+                                if !val.is_empty() && wanted_p.contains(&key.as_str()) {
+                                    let values = fields.entry(key).or_insert_with(Vec::new);
+                                    // 重複チェック: 同じ文字列が既に存在しない場合のみ追加
+                                    if !values.contains(&val) {
+                                        values.push(val);
+                                    }
                                 }
                             }
                             in_p = false;
                             current_buf.clear();
                         }
+                        
                         if name == b"head" && in_head {
-                            let t = head_buf.split_whitespace().collect::<Vec<_>>().join(" ");
-                            if !t.is_empty() && heads.len() < 12 { heads.push(t); }
-                            in_head = false; head_buf.clear();
+                            if let Some(rend) = current_rend.take() {
+                                let key = rend.trim().to_string();
+                                let val = head_buf.trim().to_string();
+                                if !val.is_empty() {
+                                    if wanted_head.contains(&key.as_str()) {
+                                        let values = fields.entry(key).or_insert_with(Vec::new);
+                                        // 重複チェック: 同じ文字列が既に存在しない場合のみ追加
+                                        if !values.contains(&val) {
+                                            values.push(val.clone());
+                                        }
+                                    }
+                                    // 全てのheadを一般コレクションにも追加（重複チェック）
+                                    if heads.len() < 15 && !heads.contains(&val) { 
+                                        heads.push(val); 
+                                    }
+                                }
+                            } else {
+                                // rendなしのheadも収集（重複チェック）
+                                let t = head_buf.split_whitespace().collect::<Vec<_>>().join(" ");
+                                if !t.is_empty() && heads.len() < 15 && !heads.contains(&t) { 
+                                    heads.push(t); 
+                                }
+                            }
+                            in_head = false; 
+                            head_buf.clear();
                         }
                     }
                     Ok(Event::Text(t)) => {
+                        let tx = t.decode().unwrap_or_default();
                         if in_p {
-                            let tx = t.unescape().unwrap_or_default();
-                            if !tx.trim().is_empty() { current_buf.push_str(&tx); }
+                            current_buf.push_str(&tx);
                         }
                         if in_head {
-                            let tx = t.unescape().unwrap_or_default();
-                            if !tx.trim().is_empty() { head_buf.push_str(&tx); }
+                            head_buf.push_str(&tx);
                         }
                     }
-                    // (no other branches)
                     Ok(Event::Eof) => break,
                     Err(_) => break,
                     _ => {}
@@ -427,19 +497,52 @@ pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
                 if events_read > max_events { break; }
             }
 
-            // タイトル組み立て
-            let parts_order = ["nikaya", "book", "title", "subhead", "subsubhead", "chapter"]; 
+            // タイトル組み立て: 階層順序に従って構築
+            let parts_order = ["nikaya", "book", "title", "subhead", "subsubhead", "chapter", "gathalast"]; 
             let mut parts: Vec<String> = Vec::new();
             for k in parts_order.iter() {
-                if let Some(v) = fields.get(*k) {
-                    if !v.trim().is_empty() { parts.push(v.trim().to_string()); }
+                if let Some(values) = fields.get(*k) {
+                    // 複数値がある場合は最初の値を使用（タイトル構築用）
+                    if let Some(first_val) = values.first() {
+                        if !first_val.trim().is_empty() { 
+                            parts.push(first_val.trim().to_string()); 
+                        }
+                    }
                 }
             }
             let title = if parts.is_empty() { stem_from(p) } else { parts.join(" · ") };
             let id = stem_from(p);
             let abs = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
-            // Move fields into a BTreeMap for stable ordering
-            let mut meta_map: BTreeMap<String, String> = fields.into_iter().collect::<BTreeMap<_,_>>();
+            
+            // メタデータの構築
+            let mut meta_map: BTreeMap<String, String> = BTreeMap::new();
+            
+            // フィールド値をメタデータに格納
+            for (key, values) in fields.iter() {
+                if values.len() == 1 {
+                    // 単一値の場合
+                    meta_map.insert(key.clone(), values[0].clone());
+                } else if values.len() > 1 {
+                    // 複数値の場合
+                    meta_map.insert(key.clone(), values.join(" | "));
+                    // 個別のエントリも作成
+                    for (i, value) in values.iter().enumerate() {
+                        meta_map.insert(format!("{}_{}", key, i + 1), value.clone());
+                    }
+                }
+            }
+            
+            // div情報をメタデータに追加
+            if !div_info.is_empty() {
+                let mut div_sections: Vec<String> = Vec::new();
+                let mut div_types: Vec<String> = Vec::new();
+                for (n, type_val) in div_info.iter() {
+                    div_sections.push(format!("{}({})", n, type_val));
+                    div_types.push(type_val.clone());
+                }
+                meta_map.insert("sections".to_string(), div_sections.join(" | "));
+                meta_map.insert("section_types".to_string(), div_types.join(" | "));
+            }
             // Infer alias for Nikaya codes (DN/MN/SN/AN/KN) with number if discoverable
             let nikaya_fold = meta_map.get("nikaya").map(|s| fold_ascii(s));
             let mut alias_prefix: Option<&'static str> = None;
@@ -617,7 +720,8 @@ pub fn extract_text(xml: &str) -> String {
 fn parse_gaiji_map(xml: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
     let mut reader = Reader::from_str(xml);
-    reader.trim_text(true);
+    reader.config_mut().trim_text_start = true;
+    reader.config_mut().trim_text_end = true;
     let mut buf = Vec::new();
     let mut in_chardecl = false;
     let mut in_char = false;
@@ -661,7 +765,7 @@ fn parse_gaiji_map(xml: &str) -> HashMap<String, String> {
                 }
             }
             Ok(Event::Text(t)) => {
-                let text = t.unescape().unwrap_or_default().into_owned();
+                let text = t.decode().unwrap_or_default().into_owned();
                 if in_char && in_mapping && current_mapping_type.as_deref() == Some("unicode") {
                     if !text.trim().is_empty() { current_val = Some(text); }
                 } else if in_char && in_mapping && current_mapping_type.as_deref() == Some("normal") {
@@ -682,7 +786,8 @@ fn parse_gaiji_map(xml: &str) -> HashMap<String, String> {
 pub fn extract_text_opts(xml: &str, include_notes: bool) -> String {
     let gaiji = parse_gaiji_map(xml);
     let mut reader = Reader::from_str(xml);
-    reader.trim_text(true);
+    reader.config_mut().trim_text_start = true;
+    reader.config_mut().trim_text_end = true;
     let mut buf = Vec::new();
     let mut out = String::new();
     let mut skip_depth: usize = 0; // for excluding notes
@@ -757,7 +862,7 @@ pub fn extract_text_opts(xml: &str, include_notes: bool) -> String {
                 }
             }
             Ok(Event::Text(t)) => {
-                let text = t.unescape().unwrap_or_default().into_owned();
+                let text = t.decode().unwrap_or_default().into_owned();
                 if collect_note {
                     note_buf.push_str(&text);
                 } else if skip_depth == 0 {
@@ -782,7 +887,8 @@ pub fn extract_cbeta_juan(xml: &str, part: &str) -> Option<String> {
     let target_n1 = part.to_string();
     let target_n2 = format!("{:0>3}", part);
     let mut reader = Reader::from_str(xml);
-    reader.trim_text(true);
+    reader.config_mut().trim_text_start = true;
+    reader.config_mut().trim_text_end = true;
     let mut buf = Vec::new();
     let mut capturing = false;
     let mut out = String::new();
@@ -816,7 +922,7 @@ pub fn extract_cbeta_juan(xml: &str, part: &str) -> Option<String> {
             }
             Ok(Event::End(_)) => {}
             Ok(Event::Text(t)) => {
-                if capturing { out.push_str(&t.unescape().unwrap_or_default()); }
+                if capturing { out.push_str(&t.decode().unwrap_or_default()); }
             }
             Ok(Event::CData(t)) => {
                 if capturing { out.push_str(&String::from_utf8_lossy(&t)); }
@@ -832,7 +938,8 @@ pub fn extract_cbeta_juan(xml: &str, part: &str) -> Option<String> {
 
 pub fn list_heads_cbeta(xml: &str) -> Vec<String> {
     let mut reader = Reader::from_str(xml);
-    reader.trim_text(true);
+    reader.config_mut().trim_text_start = true;
+    reader.config_mut().trim_text_end = true;
     let mut buf = Vec::new();
     let mut heads: Vec<String> = Vec::new();
     let mut in_head = false;
@@ -871,7 +978,7 @@ pub fn list_heads_cbeta(xml: &str) -> Vec<String> {
                 path_stack.pop();
             }
             Ok(Event::Text(t)) => {
-                let tx = t.unescape().unwrap_or_default();
+                let tx = t.decode().unwrap_or_default();
                 if in_head { head_buf.push_str(&tx); }
                 if in_jhead_title { jhead_buf.push_str(&tx); }
             }
@@ -886,7 +993,8 @@ pub fn list_heads_cbeta(xml: &str) -> Vec<String> {
 
 pub fn list_heads_generic(xml: &str) -> Vec<String> {
     let mut reader = Reader::from_str(xml);
-    reader.trim_text(true);
+    reader.config_mut().trim_text_start = true;
+    reader.config_mut().trim_text_end = true;
     let mut buf = Vec::new();
     let mut heads: Vec<String> = Vec::new();
     let mut in_head = false;
@@ -905,7 +1013,7 @@ pub fn list_heads_generic(xml: &str) -> Vec<String> {
                     in_head = false; head_buf.clear();
                 }
             }
-            Ok(Event::Text(t)) => { if in_head { head_buf.push_str(&t.unescape().unwrap_or_default()); } }
+            Ok(Event::Text(t)) => { if in_head { head_buf.push_str(&t.decode().unwrap_or_default()); } }
             Ok(Event::Eof) => break,
             Err(_) => break,
             _ => {}
@@ -919,3 +1027,374 @@ pub fn strip_tags(s: &str) -> String {
     // For external callers that still use it, provide a simple whitespace normalize
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
+
+#[derive(Serialize, Debug, Clone)]
+pub struct GrepResult {
+    pub file_path: String,
+    pub file_id: String,
+    pub title: String,
+    pub matches: Vec<GrepMatch>,
+    pub total_matches: usize,
+    pub fetch_hints: FetchHints,
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct GrepMatch {
+    pub context: String,
+    pub highlight: String,
+    pub juan_number: Option<String>,  // CBETA用
+    pub section: Option<String>,      // 構造情報
+    pub line_number: Option<usize>,   // マッチした行番号
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct FetchHints {
+    pub recommended_parts: Vec<String>,
+    pub total_content_size: Option<String>,
+    pub structure_info: Vec<String>,
+}
+
+pub fn cbeta_grep(root: &Path, query: &str, max_results: usize, max_matches_per_file: usize) -> Vec<GrepResult> {
+    use regex::RegexBuilder;
+    
+    let re = match RegexBuilder::new(query)
+        .case_insensitive(true)
+        .multi_line(true)
+        .build() 
+    {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for e in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
+        if e.file_type().is_file() {
+            if let Some(name) = e.path().file_name().and_then(|s| s.to_str()) {
+                if name.ends_with(".xml") { 
+                    paths.push(e.into_path()); 
+                }
+            }
+        }
+    }
+
+    paths
+        .par_iter()
+        .filter_map(|p| {
+            let content = std::fs::read_to_string(p).ok()?;
+            let matches: Vec<_> = re.find_iter(&content).collect();
+            
+            if matches.is_empty() {
+                return None;
+            }
+
+            let mut grep_matches = Vec::new();
+            let mut juan_info = Vec::new();
+            
+            // Juan情報の抽出（高速化のため制限付き）
+            let mut reader = Reader::from_str(&content);
+            reader.config_mut().trim_text_start = true;
+            reader.config_mut().trim_text_end = true;
+            let mut buf = Vec::new();
+            let mut events = 0;
+            
+            loop {
+                if events > 5000 { break; }
+                match reader.read_event_into(&mut buf) {
+                    Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                        let name_owned = e.name().as_ref().to_owned();
+                        let name = local_name(&name_owned);
+                        if name == b"juan" {
+                            if let Some(n) = attr_val(&e, b"n") {
+                                juan_info.push(n.to_string());
+                            }
+                        }
+                    }
+                    Ok(Event::Eof) => break,
+                    Err(_) => break,
+                    _ => {}
+                }
+                buf.clear();
+                events += 1;
+            }
+            
+            // マッチ箇所の文脈抽出
+            for mat in matches.iter().take(max_matches_per_file) {
+                let start = mat.start();
+                let end = mat.end();
+                
+                // 行数を計算
+                let line_number = Some(content[..start].lines().count());
+                
+                // 文字境界を考慮した安全なスライシング
+                let context_start = start.saturating_sub(100);
+                let context_end = std::cmp::min(end + 100, content.len());
+                
+                // 文字境界を見つける
+                let safe_start = content.char_indices()
+                    .find(|(i, _)| *i >= context_start)
+                    .map(|(i, _)| i)
+                    .unwrap_or(context_start);
+                let safe_end = content.char_indices()
+                    .find(|(i, _)| *i >= context_end)
+                    .map(|(i, _)| i)
+                    .unwrap_or(content.len());
+                
+                let context = if safe_start < safe_end {
+                    content[safe_start..safe_end]
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                } else {
+                    String::new()
+                };
+                
+                // ハイライト部分も文字境界を考慮
+                let highlight_start = content.char_indices()
+                    .find(|(i, _)| *i >= start)
+                    .map(|(i, _)| i)
+                    .unwrap_or(start);
+                let highlight_end = content.char_indices()
+                    .find(|(i, _)| *i >= end)
+                    .map(|(i, _)| i)
+                    .unwrap_or(content.len());
+                
+                let highlight = if highlight_start < highlight_end {
+                    content[highlight_start..highlight_end].to_string()
+                } else {
+                    String::new()
+                };
+                
+                grep_matches.push(GrepMatch {
+                    context,
+                    highlight,
+                    juan_number: juan_info.first().cloned(),
+                    section: None,
+                    line_number,
+                });
+            }
+            
+            let file_id = stem_from(p);
+            let title = file_id.clone(); // 簡易タイトル
+            
+            // Fetch用ヒント
+            let fetch_hints = FetchHints {
+                recommended_parts: juan_info.clone(),
+                total_content_size: Some(format!("{}KB", content.len() / 1024)),
+                structure_info: vec![format!("{}個のjuan", juan_info.len())],
+            };
+            
+            Some(GrepResult {
+                file_path: p.to_string_lossy().to_string(),
+                file_id,
+                title,
+                matches: grep_matches,
+                total_matches: matches.len(),
+                fetch_hints,
+            })
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .take(max_results)
+        .collect()
+}
+
+pub fn tipitaka_grep(root: &Path, query: &str, max_results: usize, max_matches_per_file: usize) -> Vec<GrepResult> {
+    use regex::RegexBuilder;
+    
+    let re = match RegexBuilder::new(query)
+        .case_insensitive(true)
+        .multi_line(true)
+        .build() 
+    {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for e in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
+        if e.file_type().is_file() {
+            if let Some(name) = e.path().file_name().and_then(|s| s.to_str()) {
+                if name.ends_with(".xml") 
+                    && !name.contains("toc") 
+                    && !name.contains("sitemap") 
+                {
+                    paths.push(e.into_path());
+                }
+            }
+        }
+    }
+
+    paths
+        .par_iter()
+        .filter_map(|p| {
+            // UTF-16対応の読み込み
+            let content = match std::fs::read(p) {
+                Ok(bytes) => {
+                    if bytes.starts_with(&[0xFF, 0xFE]) {
+                        match encoding_rs::UTF_16LE.decode(&bytes) {
+                            (decoded, _, false) => decoded.into_owned(),
+                            _ => return None,
+                        }
+                    } else if bytes.starts_with(&[0xFE, 0xFF]) {
+                        match encoding_rs::UTF_16BE.decode(&bytes) {
+                            (decoded, _, false) => decoded.into_owned(),
+                            _ => return None,
+                        }
+                    } else {
+                        match String::from_utf8(bytes) {
+                            Ok(s) => s,
+                            Err(_) => return None,
+                        }
+                    }
+                },
+                Err(_) => return None,
+            };
+            
+            let matches: Vec<_> = re.find_iter(&content).collect();
+            
+            if matches.is_empty() {
+                return None;
+            }
+
+            let mut grep_matches = Vec::new();
+            let mut structure_info = Vec::new();
+            
+            // 構造情報の高速抽出
+            let mut reader = Reader::from_str(&content);
+            reader.config_mut().trim_text_start = true;
+            reader.config_mut().trim_text_end = true;
+            let mut buf = Vec::new();
+            let mut events = 0;
+            let mut nikaya = None;
+            let mut book = None;
+            
+            loop {
+                if events > 5000 { break; }
+                match reader.read_event_into(&mut buf) {
+                    Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                        let name_owned = e.name().as_ref().to_owned();
+                        let name = local_name(&name_owned);
+                        if name == b"p" {
+                            if let Some(rend) = attr_val(&e, b"rend") {
+                                let rend_str = rend.to_ascii_lowercase();
+                                if rend_str == "nikaya" && nikaya.is_none() {
+                                    // 次のテキストを取得
+                                }
+                            }
+                        } else if name == b"head" {
+                            if let Some(rend) = attr_val(&e, b"rend") {
+                                let rend_str = rend.to_ascii_lowercase();
+                                if rend_str == "book" && book.is_none() {
+                                    // 次のテキストを取得
+                                }
+                            }
+                        } else if name == b"div" {
+                            if let (Some(n), Some(type_val)) = (attr_val(&e, b"n"), attr_val(&e, b"type")) {
+                                structure_info.push(format!("{}({})", n, type_val));
+                            }
+                        }
+                    }
+                    Ok(Event::Text(t)) => {
+                        let text = t.decode().unwrap_or_default().into_owned();
+                        if nikaya.is_none() && text.trim().len() > 5 {
+                            nikaya = Some(text.trim().to_string());
+                        } else if book.is_none() && text.trim().len() > 3 {
+                            book = Some(text.trim().to_string());
+                        }
+                    }
+                    Ok(Event::Eof) => break,
+                    Err(_) => break,
+                    _ => {}
+                }
+                buf.clear();
+                events += 1;
+            }
+            
+            // マッチ箇所の文脈抽出
+            for mat in matches.iter().take(max_matches_per_file) {
+                let start = mat.start();
+                let end = mat.end();
+                
+                // 行数を計算
+                let line_number = Some(content[..start].lines().count());
+                
+                // 文字境界を考慮した安全なスライシング
+                let context_start = start.saturating_sub(150);
+                let context_end = std::cmp::min(end + 150, content.len());
+                
+                // 文字境界を見つける
+                let safe_start = content.char_indices()
+                    .find(|(i, _)| *i >= context_start)
+                    .map(|(i, _)| i)
+                    .unwrap_or(context_start);
+                let safe_end = content.char_indices()
+                    .find(|(i, _)| *i >= context_end)
+                    .map(|(i, _)| i)
+                    .unwrap_or(content.len());
+                
+                let context = if safe_start < safe_end {
+                    content[safe_start..safe_end]
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                } else {
+                    String::new()
+                };
+                
+                // ハイライト部分も文字境界を考慮
+                let highlight_start = content.char_indices()
+                    .find(|(i, _)| *i >= start)
+                    .map(|(i, _)| i)
+                    .unwrap_or(start);
+                let highlight_end = content.char_indices()
+                    .find(|(i, _)| *i >= end)
+                    .map(|(i, _)| i)
+                    .unwrap_or(content.len());
+                
+                let highlight = if highlight_start < highlight_end {
+                    content[highlight_start..highlight_end].to_string()
+                } else {
+                    String::new()
+                };
+                
+                grep_matches.push(GrepMatch {
+                    context,
+                    highlight,
+                    juan_number: None,
+                    section: structure_info.first().cloned(),
+                    line_number,
+                });
+            }
+            
+            let file_id = stem_from(p);
+            let title = [nikaya.as_deref(), book.as_deref()]
+                .iter()
+                .filter_map(|&s| s)
+                .collect::<Vec<_>>()
+                .join(" · ");
+            let title = if title.is_empty() { file_id.clone() } else { title };
+            
+            // Fetch用ヒント
+            let fetch_hints = FetchHints {
+                recommended_parts: vec!["full".to_string()], // Tipitakaは通常全体を取得
+                total_content_size: Some(format!("{}KB", content.len() / 1024)),
+                structure_info,
+            };
+            
+            Some(GrepResult {
+                file_path: p.to_string_lossy().to_string(),
+                file_id,
+                title,
+                matches: grep_matches,
+                total_matches: matches.len(),
+                fetch_hints,
+            })
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .take(max_results)
+        .collect()
+}
+
+mod lib_line_extraction;
+pub use lib_line_extraction::*;

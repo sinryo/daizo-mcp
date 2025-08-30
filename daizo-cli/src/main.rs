@@ -8,6 +8,8 @@ use daizo_core::{
     extract_cbeta_juan,
     list_heads_generic,
     list_heads_cbeta,
+    cbeta_grep,
+    tipitaka_grep,
 };
 use serde::Serialize;
 use std::fs;
@@ -53,8 +55,8 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         yes: bool,
     },
-    /// Search CBETA titles
-    CbetaSearch {
+    /// Search CBETA titles (index-based)
+    CbetaTitleSearch {
         /// Query string
         #[arg(long)]
         query: String,
@@ -97,6 +99,18 @@ enum Commands {
         /// Pagination: page size
         #[arg(long)]
         page_size: Option<usize>,
+        /// Target line number for context extraction
+        #[arg(long)]
+        line_number: Option<usize>,
+        /// Number of lines before target line (default: 10)
+        #[arg(long, default_value_t = 10)]
+        context_before: usize,
+        /// Number of lines after target line (default: 100)
+        #[arg(long, default_value_t = 100)]
+        context_after: usize,
+        /// Number of lines before/after target line (deprecated, use context_before/context_after)
+        #[arg(long)]
+        context_lines: Option<usize>,
         /// Output JSON
         #[arg(long, default_value_t = false)]
         json: bool,
@@ -193,8 +207,8 @@ enum Commands {
         #[arg(long, default_value_t = true)]
         json: bool,
     },
-    /// Search Tipitaka (romn) titles
-    TipitakaSearch {
+    /// Search Tipitaka (romn) titles (index-based)
+    TipitakaTitleSearch {
         /// Query string
         #[arg(long)]
         query: String,
@@ -237,6 +251,18 @@ enum Commands {
         /// Pagination: page size
         #[arg(long)]
         page_size: Option<usize>,
+        /// Target line number for context extraction
+        #[arg(long)]
+        line_number: Option<usize>,
+        /// Number of lines before target line (default: 10)
+        #[arg(long, default_value_t = 10)]
+        context_before: usize,
+        /// Number of lines after target line (default: 100)
+        #[arg(long, default_value_t = 100)]
+        context_after: usize,
+        /// Number of lines before/after target line (deprecated, use context_before/context_after)
+        #[arg(long)]
+        context_lines: Option<usize>,
         /// Output JSON
         #[arg(long, default_value_t = false)]
         json: bool,
@@ -269,6 +295,36 @@ enum Commands {
     ExtractText {
         #[arg(long)]
         path: Option<PathBuf>,
+    },
+    /// Search CBETA corpus (content-based)
+    CbetaSearch {
+        /// Query string (regular expression)
+        #[arg(long)]
+        query: String,
+        /// Maximum number of files to return
+        #[arg(long, default_value_t = 20)]
+        max_results: usize,
+        /// Maximum matches per file
+        #[arg(long, default_value_t = 5)]
+        max_matches_per_file: usize,
+        /// Output JSON
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Search Tipitaka corpus (content-based)
+    TipitakaSearch {
+        /// Query string (regular expression)
+        #[arg(long)]
+        query: String,
+        /// Maximum number of files to return
+        #[arg(long, default_value_t = 20)]
+        max_results: usize,
+        /// Maximum matches per file
+        #[arg(long, default_value_t = 5)]
+        max_matches_per_file: usize,
+        /// Output JSON
+        #[arg(long, default_value_t = false)]
+        json: bool,
     },
 }
 
@@ -396,7 +452,7 @@ fn main() -> anyhow::Result<()> {
             println!("[init] cbeta-index: {} ({} entries)", cbeta_out.to_string_lossy(), cbeta_entries.len());
             println!("[init] tipitaka-index: {} ({} entries)", tipitaka_out.to_string_lossy(), tipitaka_entries.len());
         }
-        Commands::CbetaSearch { query, limit, json } => {
+        Commands::CbetaTitleSearch { query, limit, json } => {
             let idx = load_or_build_cbeta_index_cli();
             let hits = best_match(&idx, &query, limit);
             let summary = hits.iter().enumerate().map(|(i,h)| format!("{}. {}  {}", i+1, h.entry.id, h.entry.title)).collect::<Vec<_>>().join("\n");
@@ -414,11 +470,17 @@ fn main() -> anyhow::Result<()> {
                 for (i, h) in hits.iter().enumerate() { println!("{}. {}  {}", i+1, h.entry.id, h.entry.title); }
             }
         }
-        Commands::CbetaFetch { id, query, part, include_notes, headings_limit, start_char, end_char, max_chars, page, page_size, json } => {
+        Commands::CbetaFetch { id, query, part, include_notes, headings_limit, start_char, end_char, max_chars, page, page_size, line_number, context_before, context_after, context_lines, json } => {
             let path = resolve_cbeta_path_cli(id.as_deref(), query.as_deref());
             if path.as_os_str().is_empty() || !path.exists() { return Ok(()); }
             let xml = std::fs::read(&path).map(|b| decode_xml_bytes(&b)).unwrap_or_default();
-            let (text, extraction_method, part_matched) = if let Some(p) = part.as_ref() {
+            let (text, extraction_method, part_matched) = if let Some(line_num) = line_number {
+                // 新しいパラメータを優先、fallbackで古いパラメータを使用
+                let before = context_lines.unwrap_or(context_before);
+                let after = context_lines.unwrap_or(context_after);
+                let context_text = daizo_core::extract_xml_around_line_asymmetric(&xml, line_num, before, after);
+                (context_text, format!("line-context-{}-{}-{}", line_num, before, after), false)
+            } else if let Some(p) = part.as_ref() {
                 if let Some(sec) = extract_cbeta_juan(&xml, p) { (sec, "cbeta-juan".to_string(), true) } else { (extract_text_opts(&xml, include_notes), "full".to_string(), false) }
             } else { (extract_text_opts(&xml, include_notes), "full".to_string(), false) };
             let args = SliceArgs { page, page_size, start_char, end_char, max_chars };
@@ -631,7 +693,18 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Commands::CbetaIndex { root, out } => {
-            let base = root.unwrap_or(default_daizo().join("xml-p5"));
+            let default_base = default_daizo().join("xml-p5");
+            let base = root.unwrap_or(default_base.clone());
+            
+            // Ensure CBETA data exists
+            if !default_base.exists() {
+                eprintln!("[cbeta-index] CBETA data not found, downloading...");
+                let ok = run("git", &["clone", "--depth", "1", "https://github.com/cbeta-org/xml-p5", default_base.to_string_lossy().as_ref()], None);
+                if !ok {
+                    anyhow::bail!("Failed to clone CBETA repository");
+                }
+            }
+            
             let entries = build_cbeta_index(&base);
             let outp = out.unwrap_or(default_daizo().join("cache").join("cbeta-index.json"));
             if let Some(parent) = outp.parent() { fs::create_dir_all(parent)?; }
@@ -639,14 +712,24 @@ fn main() -> anyhow::Result<()> {
             println!("{}", serde_json::to_string(&IndexResult { count: entries.len(), out: outp.to_string_lossy().as_ref() })?);
         }
         Commands::TipitakaIndex { root, out } => {
-            let base = root.unwrap_or(default_daizo().join("tipitaka-xml").join("romn"));
+            let default_base = default_daizo().join("tipitaka-xml");
+            let base = root.unwrap_or(default_base.clone());
+            
+            // Ensure Tipitaka data exists
+            if !default_base.exists() {
+                eprintln!("[tipitaka-index] Tipitaka data not found, downloading...");
+                if !clone_tipitaka_sparse(&default_base) {
+                    anyhow::bail!("Failed to clone Tipitaka repository");
+                }
+            }
+            
             let entries = build_tipitaka_index(&base);
             let outp = out.unwrap_or(default_daizo().join("cache").join("tipitaka-index.json"));
             if let Some(parent) = outp.parent() { fs::create_dir_all(parent)?; }
             fs::write(&outp, serde_json::to_vec(&entries)?)?;
             println!("{}", serde_json::to_string(&IndexResult { count: entries.len(), out: outp.to_string_lossy().as_ref() })?);
         }
-        Commands::TipitakaSearch { query, limit, json } => {
+        Commands::TipitakaTitleSearch { query, limit, json } => {
             let idx = load_or_build_tipitaka_index_cli();
             let hits = best_match(&idx, &query, limit);
             if json {
@@ -664,16 +747,25 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Commands::TipitakaFetch { id, query, head_index, head_query, headings_limit, start_char, end_char, max_chars, page, page_size, json } => {
+        Commands::TipitakaFetch { id, query, head_index, head_query, headings_limit, start_char, end_char, max_chars, page, page_size, line_number, context_before, context_after, context_lines, json } => {
             let path = resolve_tipitaka_path(id.as_deref(), query.as_deref());
             if path.as_os_str().is_empty() || !path.exists() {
                 // no output if not found
                 return Ok(());
             }
             let xml = std::fs::read(&path).map(|b| decode_xml_bytes(&b)).unwrap_or_default();
-            let mut text = if let Some(ref hq) = head_query { extract_section_by_head(&xml, None, Some(hq))
-                            } else if let Some(hi) = head_index { extract_section_by_head(&xml, Some(hi), None) } else { None }
-                            .unwrap_or_else(|| extract_text(&xml));
+            let mut text = if let Some(line_num) = line_number {
+                // 新しいパラメータを優先、fallbackで古いパラメータを使用
+                let before = context_lines.unwrap_or(context_before);
+                let after = context_lines.unwrap_or(context_after);
+                daizo_core::extract_xml_around_line_asymmetric(&xml, line_num, before, after)
+            } else if let Some(ref hq) = head_query { 
+                extract_section_by_head(&xml, None, Some(hq)).unwrap_or_else(|| extract_text(&xml))
+            } else if let Some(hi) = head_index { 
+                extract_section_by_head(&xml, Some(hi), None).unwrap_or_else(|| extract_text(&xml)) 
+            } else { 
+                extract_text(&xml) 
+            };
             if text.trim().is_empty() {
                 // base-id fallback: open smallest sequence for same stem
                 if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
@@ -731,83 +823,49 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Commands::IndexRebuild { source } => {
-            // Display startup message with colored output for index rebuild
-            eprintln!("\x1b[33m📥 Downloading Buddhist texts and building indexes. This may take several minutes... / お経のダウンロードとインデックス構築に時間がかかります。しばらくお待ちください... / 下載佛經文本並構建索引需要幾分鐘時間...\x1b[0m");
+            eprintln!("\x1b[33m📥 Rebuilding search indexes... / インデックスを再構築中... / 正在重建搜索索引...\x1b[0m");
             
+            let src = source.to_lowercase();
             let base = default_daizo();
             let cache = base.join("cache");
             fs::create_dir_all(&cache)?;
-            let cbeta_out = cache.join("cbeta-index.json");
-            let tipitaka_out = cache.join("tipitaka-index.json");
-            // delete first per request
-            let src = source.to_lowercase();
-            if src == "cbeta" || src == "all" { let _ = fs::remove_file(&cbeta_out); }
-            if src == "tipitaka" || src == "all" { let _ = fs::remove_file(&tipitaka_out); }
-
+            
             let mut summary = serde_json::Map::new();
             let mut rebuilt: Vec<&str> = Vec::new();
+            
+            // Delete cache files first
+            if src == "cbeta" || src == "all" { 
+                let _ = fs::remove_file(cache.join("cbeta-index.json")); 
+            }
+            if src == "tipitaka" || src == "all" { 
+                let _ = fs::remove_file(cache.join("tipitaka-index.json")); 
+            }
+            
+            // Call individual index commands
             if src == "cbeta" || src == "all" {
-                let root = base.join("xml-p5");
-                // Ensure CBETA data is up to date
-                if root.exists() {
-                    eprintln!("[update] Updating CBETA data: {}", root.display());
-                    let ok = run("git", &["-C", root.to_string_lossy().as_ref(), "pull", "--ff-only"], None);
-                    if !ok {
-                        eprintln!("[warn] git pull failed for CBETA, using existing data");
-                    } else {
-                        eprintln!("[update] CBETA data updated successfully");
-                    }
+                eprintln!("[rebuild] Running cbeta-index...");
+                let cli_path = std::env::current_exe()?;
+                let ok = run(cli_path.to_string_lossy().as_ref(), &["cbeta-index"], None);
+                if ok {
+                    rebuilt.push("cbeta");
+                    summary.insert("cbeta".to_string(), serde_json::json!("completed"));
                 } else {
-                    eprintln!("\x1b[36m🔄 Downloading CBETA corpus... / CBETAコーパスをダウンロード中... / 正在下載CBETA語料庫...\x1b[0m");
-                    eprintln!("[clone] Cloning CBETA data to: {}", root.display());
-                    let ok = run("git", &["clone", "--depth", "1", "https://github.com/cbeta-org/xml-p5", root.to_string_lossy().as_ref()], None);
-                    if !ok {
-                        anyhow::bail!("Failed to clone CBETA repository");
-                    }
-                    eprintln!("[clone] CBETA data cloned successfully");
+                    eprintln!("[error] CBETA index rebuild failed");
                 }
-                
-                eprintln!("[index] Building CBETA index from: {}", root.display());
-                let entries = build_cbeta_index(&root);
-                eprintln!("[index] Found {} CBETA entries", entries.len());
-                fs::write(&cbeta_out, serde_json::to_vec(&entries)?)?;
-                eprintln!("[index] CBETA index saved to: {}", cbeta_out.display());
-                summary.insert("cbeta".to_string(), serde_json::json!({
-                    "count": entries.len(),
-                    "out": cbeta_out.to_string_lossy(),
-                }));
-                rebuilt.push("cbeta");
             }
+            
             if src == "tipitaka" || src == "all" {
-                let tipitaka_base = base.join("tipitaka-xml");
-                let root = tipitaka_base.join("romn");
-                // Ensure Tipitaka data is up to date
-                if tipitaka_base.exists() {
-                    eprintln!("[update] Updating Tipitaka data: {}", tipitaka_base.display());
-                    let ok = run("git", &["-C", tipitaka_base.to_string_lossy().as_ref(), "pull", "--ff-only"], None);
-                    if !ok {
-                        eprintln!("[warn] git pull failed for Tipitaka, using existing data");
-                    } else {
-                        eprintln!("[update] Tipitaka data updated successfully");
-                    }
+                eprintln!("[rebuild] Running tipitaka-index...");
+                let cli_path = std::env::current_exe()?;
+                let ok = run(cli_path.to_string_lossy().as_ref(), &["tipitaka-index"], None);
+                if ok {
+                    rebuilt.push("tipitaka");
+                    summary.insert("tipitaka".to_string(), serde_json::json!("completed"));
                 } else {
-                    eprintln!("\x1b[36m🔄 Downloading Tipitaka corpus... / Tipitakaコーパスをダウンロード中... / 正在下載Tipitaka語料庫...\x1b[0m");
-                    if !clone_tipitaka_sparse(&tipitaka_base) {
-                        anyhow::bail!("Failed to clone Tipitaka repository");
-                    }
+                    eprintln!("[error] Tipitaka index rebuild failed");
                 }
-                
-                eprintln!("[index] Building Tipitaka index from: {}", root.display());
-                let entries = build_tipitaka_index(&root);
-                eprintln!("[index] Found {} Tipitaka entries", entries.len());
-                fs::write(&tipitaka_out, serde_json::to_vec(&entries)?)?;
-                eprintln!("[index] Tipitaka index saved to: {}", tipitaka_out.display());
-                summary.insert("tipitaka".to_string(), serde_json::json!({
-                    "count": entries.len(),
-                    "out": tipitaka_out.to_string_lossy(),
-                }));
-                rebuilt.push("tipitaka");
             }
+            
             summary.insert("rebuilt".to_string(), serde_json::json!(rebuilt));
             println!("{}", serde_json::to_string(&summary)?);
         }
@@ -817,6 +875,84 @@ fn main() -> anyhow::Result<()> {
             };
             let t = extract_text(&xml);
             println!("{}", t);
+        }
+        Commands::CbetaSearch { query, max_results, max_matches_per_file, json } => {
+            let results = cbeta_grep(&cbeta_root(), &query, max_results, max_matches_per_file);
+            
+            if json {
+                let meta = serde_json::json!({
+                    "searchPattern": query,
+                    "totalFiles": results.len(),
+                    "results": results,
+                    "hint": "Use cbeta-fetch with the file_id and recommended parts to get full content"
+                });
+                let summary = format!("Found {} files with matches for '{}'", results.len(), query);
+                let envelope = serde_json::json!({
+                    "jsonrpc":"2.0","id": serde_json::Value::Null,
+                    "result": { "content": [{"type":"text","text": summary}], "_meta": meta }
+                });
+                println!("{}", serde_json::to_string_pretty(&envelope)?);
+            } else {
+                println!("Found {} files with matches for '{}':\n", results.len(), query);
+                for (i, result) in results.iter().enumerate() {
+                    println!("{}. {} ({})", i + 1, result.title, result.file_id);
+                    println!("   {} matches, {}", result.total_matches, 
+                        result.fetch_hints.total_content_size.as_deref().unwrap_or("unknown size"));
+                    
+                    for (j, m) in result.matches.iter().enumerate().take(2) {
+                        println!("   Match {}: ...{}...", j + 1, 
+                            m.context.chars().take(100).collect::<String>());
+                    }
+                    if result.matches.len() > 2 {
+                        println!("   ... and {} more matches", result.matches.len() - 2);
+                    }
+                    
+                    if !result.fetch_hints.recommended_parts.is_empty() {
+                        println!("   Recommended parts: {}", 
+                            result.fetch_hints.recommended_parts.join(", "));
+                    }
+                    println!();
+                }
+            }
+        }
+        Commands::TipitakaSearch { query, max_results, max_matches_per_file, json } => {
+            let results = tipitaka_grep(&tipitaka_root(), &query, max_results, max_matches_per_file);
+            
+            if json {
+                let meta = serde_json::json!({
+                    "searchPattern": query,
+                    "totalFiles": results.len(),
+                    "results": results,
+                    "hint": "Use tipitaka-fetch with the file_id to get full content"
+                });
+                let summary = format!("Found {} files with matches for '{}'", results.len(), query);
+                let envelope = serde_json::json!({
+                    "jsonrpc":"2.0","id": serde_json::Value::Null,
+                    "result": { "content": [{"type":"text","text": summary}], "_meta": meta }
+                });
+                println!("{}", serde_json::to_string_pretty(&envelope)?);
+            } else {
+                println!("Found {} files with matches for '{}':\n", results.len(), query);
+                for (i, result) in results.iter().enumerate() {
+                    println!("{}. {} ({})", i + 1, result.title, result.file_id);
+                    println!("   {} matches, {}", result.total_matches, 
+                        result.fetch_hints.total_content_size.as_deref().unwrap_or("unknown size"));
+                    
+                    for (j, m) in result.matches.iter().enumerate().take(2) {
+                        println!("   Match {}: ...{}...", j + 1, 
+                            m.context.chars().take(100).collect::<String>());
+                    }
+                    if result.matches.len() > 2 {
+                        println!("   ... and {} more matches", result.matches.len() - 2);
+                    }
+                    
+                    if !result.fetch_hints.structure_info.is_empty() {
+                        println!("   Structure: {}", 
+                            result.fetch_hints.structure_info.join(", "));
+                    }
+                    println!();
+                }
+            }
         }
         Commands::Update { git, yes } => {
             // Build the cargo install command (owned strings)
@@ -1097,10 +1233,7 @@ fn resolve_tipitaka_path(id: Option<&str>, query: Option<&str>) -> PathBuf {
 }
 
 fn resolve_cbeta_path_cli(id: Option<&str>, query: Option<&str>) -> PathBuf {
-    if let Some(q) = query {
-        let idx = load_or_build_cbeta_index_cli();
-        if let Some(hit) = best_match(&idx, q, 1).into_iter().next() { return PathBuf::from(&hit.entry.path); }
-    }
+    // 修正: IDがある場合は優先してqueryを無視
     if let Some(id) = id {
         if let Some(p) = resolve_cbeta_by_id_scan(id) { return p; }
         // fallback: anywhere *id*.xml
@@ -1110,6 +1243,9 @@ fn resolve_cbeta_path_cli(id: Option<&str>, query: Option<&str>) -> PathBuf {
                 if name.contains(&id.to_lowercase()) && name.ends_with(".xml") { return e.path().to_path_buf(); }
             }
         }
+    } else if let Some(q) = query {
+        let idx = load_or_build_cbeta_index_cli();
+        if let Some(hit) = best_match(&idx, q, 1).into_iter().next() { return PathBuf::from(&hit.entry.path); }
     }
     PathBuf::new()
 }
@@ -1259,7 +1395,8 @@ fn http_client() -> &'static reqwest::blocking::Client {
 // Tipitaka biblio (same logic as MCP)
 fn tipitaka_biblio(xml: &str) -> serde_json::Value {
     let mut reader = quick_xml::Reader::from_str(xml);
-    reader.trim_text(true);
+    reader.config_mut().trim_text_start = true;
+    reader.config_mut().trim_text_end = true;
     let mut buf = Vec::new();
     let mut in_p = false;
     let mut current_rend: Option<String> = None;
@@ -1292,7 +1429,7 @@ fn tipitaka_biblio(xml: &str) -> serde_json::Value {
                 }
             }
             Ok(quick_xml::events::Event::Text(t)) => {
-                if in_p { if let Ok(tx) = t.unescape() { let s = tx.to_string(); if !s.trim().is_empty() { current_buf.push_str(&s); } } }
+                if in_p { if let Ok(tx) = t.decode() { let s = tx.to_string(); if !s.trim().is_empty() { current_buf.push_str(&s); } } }
             }
             Ok(quick_xml::events::Event::Eof) => break,
             Err(_) => break,

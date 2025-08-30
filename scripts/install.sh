@@ -56,6 +56,44 @@ echo "[install] REPO_DIR=$REPO_DIR"
 echo "[install] DAIZO_DIR=$PREFIX"
 echo "[install] BIN_OUT=$BIN_OUT"
 
+echo -e "\033[36m🛑 Stopping existing daizo-mcp processes... / 既存のdaizo-mcpプロセスを停止中... / 正在停止現有的daizo-mcp進程...\033[0m"
+
+# Check if we're on Windows (Git Bash, WSL, or similar)
+if command -v tasklist > /dev/null 2>&1 && command -v taskkill > /dev/null 2>&1; then
+  # Windows environment
+  if tasklist | grep -i "daizo-mcp" > /dev/null; then
+    echo "[cleanup] killing existing daizo-mcp processes (Windows)"
+    taskkill /F /IM "daizo-mcp*" > /dev/null 2>&1 || true
+    echo -e "\033[32m✅ Existing processes stopped / 既存プロセス停止完了 / 現有進程已停止\033[0m"
+  else
+    echo "[cleanup] no daizo-mcp processes found"
+  fi
+else
+  # Unix-like environment (Linux, macOS)
+  if pgrep -f "daizo-mcp" > /dev/null; then
+    echo "[cleanup] killing existing daizo-mcp processes"
+    pkill -f "daizo-mcp" || true
+    sleep 1
+    # Force kill if still running
+    if pgrep -f "daizo-mcp" > /dev/null; then
+      echo "[cleanup] force killing daizo-mcp processes"
+      pkill -9 -f "daizo-mcp" || true
+    fi
+    echo -e "\033[32m✅ Existing processes stopped / 既存プロセス停止完了 / 現有進程已停止\033[0m"
+  else
+    echo "[cleanup] no daizo-mcp processes found"
+  fi
+fi
+
+echo -e "\033[36m🗂️  Cleaning up old installation... / 古いインストールをクリーンアップ中... / 正在清理舊安裝...\033[0m"
+if [ -d "$BIN_OUT" ]; then
+  echo "[cleanup] removing existing directory: $BIN_OUT"
+  rm -rf "$BIN_OUT"
+  echo -e "\033[32m✅ Old installation cleaned up / 古いインストールのクリーンアップ完了 / 舊安裝清理完成\033[0m"
+else
+  echo "[cleanup] no existing bin directory found"
+fi
+
 mkdir -p "$BIN_OUT"
 
 echo -e "\033[36m🔨 Building Rust project... / Rustプロジェクトをビルドしています... / 正在構建Rust項目...\033[0m"
