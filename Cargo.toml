@@ -1,0 +1,7 @@
+[workspace]
+members = [
+  "daizo-core",
+  "daizo-cli",
+  "daizo-mcp",
+]
+resolver = "2"

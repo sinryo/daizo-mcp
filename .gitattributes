@@ -1,0 +1,27 @@
+# Set default behavior to automatically normalize line endings
+* text=auto
+
+# Shell scripts should always use LF
+*.sh text eol=lf
+
+# Rust files should always use LF
+*.rs text eol=lf
+
+# Markdown files should always use LF
+*.md text eol=lf
+
+# Configuration files should always use LF
+*.json text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.tar.gz binary
