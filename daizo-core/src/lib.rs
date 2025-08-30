@@ -1054,7 +1054,116 @@ pub struct FetchHints {
     pub structure_info: Vec<String>,
 }
 
+fn search_index(entries: &[IndexEntry], q: &str, limit: usize) -> Vec<IndexEntry> {
+    // best_match関数を使って検索し、IndexEntryのベクトルとして返す
+    use unicode_normalization::UnicodeNormalization;
+    
+    let normalized = |s: &str| -> String {
+        s.nfc().collect::<String>().to_lowercase().chars()
+            .filter(|c| !c.is_whitespace() && !c.is_ascii_punctuation())
+            .collect()
+    };
+    
+    let jaccard = |a: &str, b: &str| -> f32 {
+        let sa: std::collections::HashSet<_> = a.chars().collect();
+        let sb: std::collections::HashSet<_> = b.chars().collect();
+        if sa.is_empty() || sb.is_empty() { return 0.0; }
+        let inter = sa.intersection(&sb).count() as f32;
+        let uni = (sa.len() + sb.len()).saturating_sub(inter as usize) as f32;
+        if uni == 0.0 { 0.0 } else { inter / uni }
+    };
+    
+    let tokenset = |s: &str| -> std::collections::HashSet<String> {
+        s.split_whitespace().map(|w| normalized(w)).filter(|w| !w.is_empty()).collect()
+    };
+    
+    let token_jaccard = |a: &str, b: &str| -> f32 {
+        let sa: std::collections::HashSet<_> = tokenset(a);
+        let sb: std::collections::HashSet<_> = tokenset(b);
+        if sa.is_empty() || sb.is_empty() { return 0.0; }
+        let inter = sa.intersection(&sb).count() as f32;
+        let uni = (sa.len() + sb.len()).saturating_sub(inter as usize) as f32;
+        if uni == 0.0 { 0.0 } else { inter / uni }
+    };
+    
+    let nq = normalized(q);
+    let mut scored: Vec<(f32, &IndexEntry)> = entries.iter().map(|e| {
+        let meta_str = e.meta.as_ref().map(|m| m.values().cloned().collect::<Vec<_>>().join(" ")).unwrap_or_default();
+        let hay_all = format!("{} {} {}", e.title, e.id, meta_str);
+        let hay = normalized(&hay_all);
+        let mut score = if hay.contains(&nq) { 1.0f32 } else {
+            let s_char = jaccard(&hay, &nq);
+            let s_tok = token_jaccard(&hay_all, q);
+            s_char.max(s_tok)
+        };
+        
+        // ID完全一致ボーナス
+        if e.id.to_lowercase() == q.to_lowercase() { score = 1.1; }
+        
+        (score, e)
+    }).collect();
+    
+    scored.sort_by(|a,b| b.0.partial_cmp(&a.0).unwrap());
+    scored.into_iter()
+        .take(limit)
+        .filter(|(s, _)| *s > 0.1) // 最低スコア閾値
+        .map(|(_, e)| e.clone())
+        .collect()
+}
+
 pub fn cbeta_grep(root: &Path, query: &str, max_results: usize, max_matches_per_file: usize) -> Vec<GrepResult> {
+    // 1. まずTフォルダから優先的に検索
+    let t_folder = root.join("T");
+    let mut all_results = Vec::new();
+    
+    if t_folder.exists() {
+        let t_results = cbeta_grep_internal(&t_folder, query, max_results, max_matches_per_file);
+        all_results.extend(t_results);
+    }
+    
+    // 2. まだ結果が不足している場合は、他のフォルダも検索
+    if all_results.len() < max_results {
+        let remaining_limit = max_results - all_results.len();
+        let other_results = cbeta_grep_internal_exclude_t(root, query, remaining_limit, max_matches_per_file);
+        all_results.extend(other_results);
+    }
+    
+    // 3. タイトル検索を実行して、マッチしたものがあれば上位に移動
+    let index = build_cbeta_index(root);
+    let title_results = search_index(&index, query, max_results);
+    
+    if !title_results.is_empty() {
+        // タイトル検索結果をIDの集合に変換
+        let title_ids: std::collections::HashSet<_> = title_results.iter().map(|t| &t.id).collect();
+        
+        // grep結果をタイトルマッチ優先でソート
+        all_results.sort_by(|a, b| {
+            let a_in_title = title_ids.contains(&a.file_id);
+            let b_in_title = title_ids.contains(&b.file_id);
+            
+            match (a_in_title, b_in_title) {
+                (true, false) => std::cmp::Ordering::Less,   // aがタイトルマッチ → 先に
+                (false, true) => std::cmp::Ordering::Greater, // bがタイトルマッチ → 先に
+                _ => {
+                    // 両方タイトルマッチまたは両方非マッチの場合、T系列優先
+                    let a_is_t = a.file_id.starts_with('T');
+                    let b_is_t = b.file_id.starts_with('T');
+                    
+                    match (a_is_t, b_is_t) {
+                        (true, false) => std::cmp::Ordering::Less,
+                        (false, true) => std::cmp::Ordering::Greater,
+                        _ => a.file_id.cmp(&b.file_id),
+                    }
+                }
+            }
+        });
+    }
+    
+    all_results.truncate(max_results);
+    all_results
+}
+
+fn cbeta_grep_internal(root: &Path, query: &str, max_results: usize, max_matches_per_file: usize) -> Vec<GrepResult> {
     use regex::RegexBuilder;
     
     let re = match RegexBuilder::new(query)
@@ -1071,6 +1180,151 @@ pub fn cbeta_grep(root: &Path, query: &str, max_results: usize, max_matches_per_
         if e.file_type().is_file() {
             if let Some(name) = e.path().file_name().and_then(|s| s.to_str()) {
                 if name.ends_with(".xml") { 
+                    paths.push(e.into_path()); 
+                }
+            }
+        }
+    }
+
+    paths
+        .par_iter()
+        .filter_map(|p| {
+            let content = std::fs::read_to_string(p).ok()?;
+            let matches: Vec<_> = re.find_iter(&content).collect();
+            
+            if matches.is_empty() {
+                return None;
+            }
+
+            let mut grep_matches = Vec::new();
+            let mut juan_info = Vec::new();
+            
+            // Juan情報の抽出（高速化のため制限付き）
+            let mut reader = Reader::from_str(&content);
+            reader.config_mut().trim_text_start = true;
+            reader.config_mut().trim_text_end = true;
+            let mut buf = Vec::new();
+            let mut events = 0;
+            
+            loop {
+                if events > 5000 { break; }
+                match reader.read_event_into(&mut buf) {
+                    Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                        let name_owned = e.name().as_ref().to_owned();
+                        let name = local_name(&name_owned);
+                        if name == b"juan" {
+                            if let Some(n) = attr_val(&e, b"n") {
+                                juan_info.push(n.to_string());
+                            }
+                        }
+                    }
+                    Ok(Event::Eof) => break,
+                    Err(_) => break,
+                    _ => {}
+                }
+                buf.clear();
+                events += 1;
+            }
+            
+            // マッチ箇所の文脈抽出
+            for mat in matches.iter().take(max_matches_per_file) {
+                let start = mat.start();
+                let end = mat.end();
+                
+                // 行数を計算
+                let line_number = Some(content[..start].lines().count());
+                
+                // 文字境界を考慮した安全なスライシング
+                let context_start = start.saturating_sub(100);
+                let context_end = std::cmp::min(end + 100, content.len());
+                
+                // 文字境界を見つける
+                let safe_start = content.char_indices()
+                    .find(|(i, _)| *i >= context_start)
+                    .map(|(i, _)| i)
+                    .unwrap_or(context_start);
+                let safe_end = content.char_indices()
+                    .find(|(i, _)| *i >= context_end)
+                    .map(|(i, _)| i)
+                    .unwrap_or(content.len());
+                
+                let context = if safe_start < safe_end {
+                    content[safe_start..safe_end]
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                } else {
+                    String::new()
+                };
+                
+                // ハイライト部分も文字境界を考慮
+                let highlight_start = content.char_indices()
+                    .find(|(i, _)| *i >= start)
+                    .map(|(i, _)| i)
+                    .unwrap_or(start);
+                let highlight_end = content.char_indices()
+                    .find(|(i, _)| *i >= end)
+                    .map(|(i, _)| i)
+                    .unwrap_or(content.len());
+                
+                let highlight = if highlight_start < highlight_end {
+                    content[highlight_start..highlight_end].to_string()
+                } else {
+                    String::new()
+                };
+                
+                grep_matches.push(GrepMatch {
+                    context,
+                    highlight,
+                    juan_number: juan_info.first().cloned(),
+                    section: None,
+                    line_number,
+                });
+            }
+            
+            let file_id = stem_from(p);
+            let title = file_id.clone(); // 簡易タイトル
+            
+            // Fetch用ヒント
+            let fetch_hints = FetchHints {
+                recommended_parts: juan_info.clone(),
+                total_content_size: Some(format!("{}KB", content.len() / 1024)),
+                structure_info: vec![format!("{}個のjuan", juan_info.len())],
+            };
+            
+            Some(GrepResult {
+                file_path: p.to_string_lossy().to_string(),
+                file_id,
+                title,
+                matches: grep_matches,
+                total_matches: matches.len(),
+                fetch_hints,
+            })
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .take(max_results)
+        .collect()
+}
+
+fn cbeta_grep_internal_exclude_t(root: &Path, query: &str, max_results: usize, max_matches_per_file: usize) -> Vec<GrepResult> {
+    use regex::RegexBuilder;
+    
+    let re = match RegexBuilder::new(query)
+        .case_insensitive(true)
+        .multi_line(true)
+        .build() 
+    {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for e in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
+        if e.file_type().is_file() {
+            if let Some(name) = e.path().file_name().and_then(|s| s.to_str()) {
+                // Tフォルダを除外し、XMLファイルのみ対象
+                if name.ends_with(".xml") && !e.path().to_string_lossy().contains("/T/") { 
                     paths.push(e.into_path()); 
                 }
             }

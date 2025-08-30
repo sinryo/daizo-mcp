@@ -230,7 +230,7 @@ fn handle_initialize(id: serde_json::Value) -> serde_json::Value {
                 "prompts": {},
                 "logging": {}
             },
-            "serverInfo": { "name": "daizo-mcp", "version": "0.1.0" }
+            "serverInfo": { "name": "daizo-mcp", "version": "0.1.2" }
         }
     })
 }
