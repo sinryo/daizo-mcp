@@ -1,123 +1,117 @@
 # daizo-mcp
 
-An MCP (Model Context Protocol) server that provides AI assistants with direct access to Buddhist text databases including CBETA, Pāli Tipitaka, and SAT. Built in Rust for high performance text search and retrieval.
+An MCP (Model Context Protocol) server plus CLI for fast Buddhist text search and retrieval. Supports CBETA (Chinese), Pāli Tipitaka (romanized), and SAT (online). Implemented in Rust for speed and reliability.
 
-## What You Can Do
+See also: [日本語 README](README.ja.md) | [繁體中文 README](README.zh-TW.md)
 
-Ask your AI assistant to:
+## Highlights
 
-- **Search by title**: "Find the Lotus Sutra in CBETA" 
-- **Search by content**: "Search for texts mentioning '阿弥陀' across all CBETA texts"
-- **Retrieve specific texts**: "Show me chapter 1 of DN 1 from the Pāli Canon"
-- **Explore by topic**: "What does the Majjhima Nikaya say about meditation?"
-- **Pattern search**: "Find all occurrences of 'nibbana' or 'vipassana' in Tipitaka texts"
-- **Search & Focus**: "Find where 'Dhammacakkappavattana' appears, then show me the 10 lines before and 200 lines after"
+- Fast regex/content search with line numbers (CBETA/Tipitaka)
+- Title search across CBETA and Tipitaka indices
+- Precise context fetching by line number or character range
+- Optional SAT online search with smart caching
+- One-shot bootstrap and index build
 
-The AI can search across thousands of Buddhist texts in real-time and provide accurate citations.
+## Install
 
-See also: [Japanese README](README.ja.md) | [Traditional Chinese README](README.zh-TW.md)
+Prerequisite: Git must be installed.
 
-## Prerequisites
-
-**Git is required** for downloading Buddhist text repositories.
-
-Install Git: https://git-scm.com/book/en/v2/Getting-Started-Installing-Git
-
-## Quick Install
+Quick bootstrap:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sinryo/daizo-mcp/main/scripts/bootstrap.sh | bash -s -- --yes --write-path
 ```
 
-This automatically:
-1. Builds the binaries
-2. Downloads CBETA and Tipitaka text repositories (~2-3GB)
-3. Builds search indexes
-4. Registers with Claude Code and Codex if available
+Manual:
 
-## Manual Setup
-
-1. Build: `cargo build --release`
-2. Install: `scripts/install.sh --prefix "$HOME/.daizo" --write-path`
-
-### Add to MCP Clients
-
-**Claude Code CLI:**
 ```bash
-claude mcp add daizo /path/to/DAIZO_DIR/bin/daizo-mcp
+cargo build --release
+scripts/install.sh --prefix "$HOME/.daizo" --write-path
 ```
 
-**Codex CLI** - add to `~/.codex/config.toml`:
+## Use With MCP Clients
+
+Claude Code CLI:
+
+```bash
+claude mcp add daizo "$HOME/.daizo/bin/daizo-mcp"
+```
+
+Codex CLI (`~/.codex/config.toml`):
+
 ```toml
 [mcp_servers.daizo]
-command = "/path/to/DAIZO_DIR/bin/daizo-mcp"
+command = "/Users/you/.daizo/bin/daizo-mcp"
 ```
 
-## Data Sources
+## CLI Examples
 
-- **CBETA** (Chinese Buddhist texts): https://github.com/cbeta-org/xml-p5
-- **Pāli Tipitaka** (romanized): https://github.com/VipassanaTech/tipitaka-xml
-- **SAT** (online database): Additional search capability
+Search:
 
-## CLI Usage
-
-### Search Commands
 ```bash
-# Title-based search
+# Title search
 daizo-cli cbeta-title-search --query "楞伽經" --json
 daizo-cli tipitaka-title-search --query "dn 1" --json
 
-# Fast content search (with line numbers)
+# Content search (with line numbers)
 daizo-cli cbeta-search --query "阿弥陀" --max-results 10
 daizo-cli tipitaka-search --query "nibbana|vipassana" --max-results 15
 ```
 
-### Fetch Commands
+Fetch:
+
 ```bash
-# Retrieve specific texts
+# Fetch by ID
 daizo-cli cbeta-fetch --id T0858 --part 1 --max-chars 4000 --json
 daizo-cli tipitaka-fetch --id e0101n.mul --max-chars 2000 --json
 
-# Line-based context retrieval (after search)
+# Context around a line (after search)
 daizo-cli cbeta-fetch --id T0858 --line-number 342 --context-before 10 --context-after 200
 daizo-cli tipitaka-fetch --id s0305m.mul --line-number 158 --context-before 5 --context-after 100
 ```
 
-### Management
+Admin:
+
 ```bash
-daizo-cli doctor --verbose      # Check installation
-daizo-cli index-rebuild --source all  # Rebuild indexes
-daizo-cli version              # Show version
+daizo-cli init                      # first-time setup (downloads data, builds indexes)
+daizo-cli doctor --verbose          # diagnose install and data
+daizo-cli index-rebuild --source all
+daizo-cli uninstall --purge         # remove binaries and data/cache
+daizo-cli update --yes              # reinstall this CLI
 ```
 
 ## MCP Tools
 
-The MCP server provides these tools for AI assistants:
+Search:
+- `cbeta_title_search`, `cbeta_search`
+- `tipitaka_title_search`, `tipitaka_search`
+- `sat_search`
 
-### Search Tools
-- **cbeta_title_search**: Title-based search in CBETA corpus
-- **cbeta_search**: Fast regex content search across CBETA texts (returns line numbers)
-- **tipitaka_title_search**: Title-based search in Tipitaka corpus  
-- **tipitaka_search**: Fast regex content search across Tipitaka texts (returns line numbers)
-- **sat_search**: Additional online database search
+Fetch:
+- `cbeta_fetch` (supports `lineNumber`, `contextBefore`, `contextAfter`)
+- `tipitaka_fetch` (supports `lineNumber`, `contextBefore`, `contextAfter`)
+- `sat_fetch`, `sat_pipeline`
 
-### Fetch Tools
-- **cbeta_fetch**: Retrieve CBETA text by ID with options for specific parts/sections
-  - Line-based retrieval: `lineNumber`, `contextBefore`, `contextAfter` parameters
-- **tipitaka_fetch**: Retrieve Tipitaka text by ID with section support
-  - Line-based retrieval: `lineNumber`, `contextBefore`, `contextAfter` parameters
-- **sat_fetch**, **sat_pipeline**: Additional database retrieval tools
+## Data Sources
 
-### Search & Focus Workflow
-1. Use `*_search` to find content and get line numbers
-2. Use `*_fetch` with `lineNumber` to get focused context around matches
+- CBETA: https://github.com/cbeta-org/xml-p5
+- Tipitaka (romanized): https://github.com/VipassanaTech/tipitaka-xml
+- SAT (online): wrap7/detail endpoints
 
-### Utility Tools
-- **index_rebuild**: Rebuild search indexes (auto-downloads data if needed)
+## Directories and Env
 
-## Features
+- `DAIZO_DIR` (default: `~/.daizo`)
+  - data: `xml-p5/`, `tipitaka-xml/romn/`
+  - cache: `cache/`
+  - binaries: `bin/`
+- `DAIZO_DEBUG=1` enables minimal MCP debug log
+- Highlight envs: `DAIZO_HL_PREFIX`, `DAIZO_HL_SUFFIX`, `DAIZO_SNIPPET_PREFIX`, `DAIZO_SNIPPET_SUFFIX`
+- Repo policy envs (for robots/rate-limits):
+  - `DAIZO_REPO_MIN_DELAY_MS`, `DAIZO_REPO_USER_AGENT`, `DAIZO_REPO_RESPECT_ROBOTS`
 
-- **Fast Search**: Parallel regex search across entire text corpora with line number tracking
+## License
+
+MIT OR Apache-2.0 © 2025 Shinryo Taniguchi
 - **Smart Retrieval**: Context-aware text extraction with fetch hints and flexible line-based context
 - **Search & Focus**: Find content, then retrieve customizable context (e.g., 10 lines before, 200 after)
 - **Multiple Formats**: Support for TEI P5 XML, plain text, and structured data

@@ -14,6 +14,10 @@ use walkdir::WalkDir;
 use serde::Deserialize;
 use encoding_rs;
 
+pub mod text_utils;
+pub mod path_resolver;
+pub mod repo;
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct IndexEntry {
     pub id: String,

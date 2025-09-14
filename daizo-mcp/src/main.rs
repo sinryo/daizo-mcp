@@ -11,8 +11,36 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use walkdir::WalkDir;
 use encoding_rs::Encoding;
+use daizo_core::text_utils::{normalized, token_jaccard, jaccard, is_subsequence};
+use daizo_core::path_resolver::{
+    resolve_cbeta_path_by_id,
+    resolve_tipitaka_by_id,
+    find_tipitaka_content_for_base,
+    find_exact_file_by_name,
+    cbeta_root,
+    tipitaka_root,
+    cache_dir,
+    daizo_home,
+};
+
+fn to_whitespace_fuzzy_literal(s: &str) -> String {
+    // 連続した空白（改行含む）を \\s* に畳み込み、それ以外はリテラルとしてエスケープ
+    let mut out = String::new();
+    let mut in_ws = false;
+    for ch in s.chars() {
+        if ch.is_whitespace() {
+            if !in_ws {
+                out.push_str("\\s*");
+                in_ws = true;
+            }
+        } else {
+            in_ws = false;
+            out.push_str(&regex::escape(&ch.to_string()));
+        }
+    }
+    out
+}
 
 // ============ MCP stdio framing ============
 
@@ -112,103 +140,12 @@ struct Request {
     params: serde_json::Value,
 }
 
-// ============ Paths & cache ============
-
-fn daizo_home() -> PathBuf {
-    if let Ok(p) = std::env::var("DAIZO_DIR") { return PathBuf::from(p); }
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".")).join(".daizo")
-}
-fn cbeta_root() -> PathBuf { daizo_home().join("xml-p5") }
-fn tipitaka_root() -> PathBuf { daizo_home().join("tipitaka-xml").join("romn") }
-fn cache_dir() -> PathBuf { daizo_home().join("cache") }
-
+// ============ Paths & cache (via daizo-core::path_resolver) ============
 fn ensure_dir(p: &Path) { let _ = fs::create_dir_all(p); }
 
-fn clone_tipitaka_sparse_mcp(target_dir: &Path) -> bool {
-    eprintln!("[daizo-mcp] Cloning Tipitaka (romn only) to: {}", target_dir.display());
-    
-    // Initialize empty repo
-    if !run_cmd("git", &["init"], Some(&target_dir.parent().unwrap_or(Path::new(".")))) {
-        eprintln!("[daizo-mcp] Failed to initialize git repository");
-        return false;
-    }
-    
-    let target_str = target_dir.to_string_lossy();
-    
-    // Set up sparse checkout
-    let steps = [
-        ("git", vec!["-C", &target_str, "remote", "add", "origin", "https://github.com/VipassanaTech/tipitaka-xml"]),
-        ("git", vec!["-C", &target_str, "config", "core.sparseCheckout", "true"]),
-    ];
-    
-    for (cmd, args) in &steps {
-        if !run_cmd(cmd, &args, None) {
-            eprintln!("[daizo-mcp] Failed to configure sparse checkout");
-            return false;
-        }
-    }
-    
-    // Create sparse-checkout file
-    let sparse_file = target_dir.join(".git").join("info").join("sparse-checkout");
-    if let Some(parent) = sparse_file.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if std::fs::write(&sparse_file, "romn/\n").is_err() {
-        eprintln!("[daizo-mcp] Failed to write sparse-checkout file");
-        return false;
-    }
-    
-    // Pull only the romn directory
-    if !run_cmd("git", &["-C", &target_str, "pull", "--depth", "1", "origin", "master"], None) {
-        eprintln!("[daizo-mcp] Failed to pull romn directory");
-        return false;
-    }
-    
-    eprintln!("[daizo-mcp] Tipitaka romn directory cloned successfully");
-    true
-}
+fn ensure_cbeta_data() { let _ = daizo_core::repo::ensure_cbeta_data_at(&cbeta_root()); }
 
-fn run_cmd(cmd: &str, args: &[&str], cwd: Option<&Path>) -> bool {
-    use std::process::Command;
-    eprintln!("[daizo-mcp] {} {}", cmd, args.join(" "));
-    let mut c = Command::new(cmd);
-    c.args(args);
-    if let Some(d) = cwd { c.current_dir(d); }
-    // Enable progress output for git commands
-    if cmd == "git" {
-        c.stdout(std::process::Stdio::inherit());
-        c.stderr(std::process::Stdio::inherit());
-    }
-    let result = c.status().map(|s| s.success()).unwrap_or(false);
-    if result {
-        eprintln!("[daizo-mcp] {} completed successfully", cmd);
-    } else {
-        eprintln!("[daizo-mcp] {} failed", cmd);
-    }
-    result
-}
-
-fn ensure_cbeta_data() {
-    let root = cbeta_root();
-    if root.exists() { 
-        eprintln!("[daizo-mcp] CBETA data exists: {}", root.display());
-        return; 
-    }
-    eprintln!("[daizo-mcp] Downloading CBETA data to: {}", root.display());
-    ensure_dir(root.parent().unwrap_or(Path::new(".")));
-    let _ = run_cmd("git", &["clone", "--depth", "1", "https://github.com/cbeta-org/xml-p5", root.to_string_lossy().as_ref()], None);
-}
-
-fn ensure_tipitaka_data() {
-    let base = daizo_home().join("tipitaka-xml");
-    if !base.exists() {
-        ensure_dir(base.parent().unwrap_or(Path::new(".")));
-        let _ = clone_tipitaka_sparse_mcp(&base);
-    } else {
-    }
-    let root = tipitaka_root();
-    ensure_dir(root.parent().unwrap_or(Path::new(".")));
-}
+fn ensure_tipitaka_data() { let _ = daizo_core::repo::ensure_tipitaka_data_at(&daizo_home().join("tipitaka-xml")); }
 
 fn load_index(path: &Path) -> Option<Vec<IndexEntry>> {
     fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok())
@@ -238,7 +175,22 @@ fn handle_initialize(id: serde_json::Value) -> serde_json::Value {
 fn tools_list() -> Vec<serde_json::Value> {
     vec![
         tool("cbeta_fetch", "Retrieve CBETA text by ID with options for specific parts/sections and line-based context retrieval", json!({"type":"object","properties":{
-            "id":{"type":"string"},"query":{"type":"string"},"part":{"type":"string"},"includeNotes":{"type":"boolean"},"headingsLimit":{"type":"number"},"startChar":{"type":"number"},"endChar":{"type":"number"},"maxChars":{"type":"number"},"page":{"type":"number"},"pageSize":{"type":"number"},"lineNumber":{"type":"number","description":"Target line number for context extraction"},"contextBefore":{"type":"number","description":"Number of lines before target line (default: 10)"},"contextAfter":{"type":"number","description":"Number of lines after target line (default: 100)"},"contextLines":{"type":"number","description":"Number of lines before/after target line (deprecated, use contextBefore/contextAfter)"}
+            "id":{"type":"string"},
+            "query":{"type":"string"},
+            "part":{"type":"string"},
+            "includeNotes":{"type":"boolean"},
+            "full":{"type":"boolean","description":"Return full text without slicing"},
+            "highlight":{"type":"string","description":"Highlight string or regex pattern (used with lineNumber-based context)"},
+            "highlightRegex":{"type":"boolean","description":"Interpret highlight as regex (default false)"},
+            "highlightPrefix":{"type":"string","description":"Prefix marker for highlights (default '>>> ')"},
+            "highlightSuffix":{"type":"string","description":"Suffix marker for highlights (default ' <<<')"},
+            "headingsLimit":{"type":"number"},
+            "startChar":{"type":"number"},"endChar":{"type":"number"},"maxChars":{"type":"number"},
+            "page":{"type":"number"},"pageSize":{"type":"number"},
+            "lineNumber":{"type":"number","description":"Target line number for context extraction"},
+            "contextBefore":{"type":"number","description":"Number of lines before target line (default: 10)"},
+            "contextAfter":{"type":"number","description":"Number of lines after target line (default: 100)"},
+            "contextLines":{"type":"number","description":"Number of lines before/after target line (deprecated, use contextBefore/contextAfter)"}
         }})),
         tool("cbeta_search", "Fast regex content search across CBETA texts (returns line numbers)", json!({"type":"object","properties":{
             "query":{"type":"string","description":"Regular expression pattern to search for"},
@@ -246,6 +198,25 @@ fn tools_list() -> Vec<serde_json::Value> {
             "maxMatchesPerFile":{"type":"number","description":"Maximum matches per file (default: 5)"}
         },"required":["query"]})),
         tool("cbeta_title_search", "Title-based search in CBETA corpus", json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"}},"required":["query"]})),
+        tool("cbeta_pipeline", "Search CBETA content, return results with fetch suggestions, and optionally auto-fetch context or full text for top hits", json!({"type":"object","properties":{
+            "query":{"type":"string"},
+            "maxResults":{"type":"number"},
+            "maxMatchesPerFile":{"type":"number"},
+            "contextBefore":{"type":"number"},
+            "contextAfter":{"type":"number"},
+            "autoFetch":{"type":"boolean"},
+            "autoFetchFiles":{"type":"number","description":"Auto-fetch top N files (default 1 when autoFetch=true)"},
+            "includeMatchLine":{"type":"boolean","description":"Include the matched line in auto-fetched context (default true)"},
+            "includeHighlightSnippet":{"type":"boolean","description":"Include a short highlight snippet before each context (default true)"},
+            "snippetPrefix":{"type":"string","description":"Prefix for highlight snippets in pipeline (default '>>> ')"},
+            "snippetSuffix":{"type":"string","description":"Suffix for highlight snippets in pipeline (default '')"},
+            "highlight":{"type":"string","description":"Highlight string or regex pattern inside contexts"},
+            "highlightRegex":{"type":"boolean","description":"Interpret highlight as regex (default false)"},
+            "highlightPrefix":{"type":"string","description":"Prefix marker for highlights (default from env or '>>> ')"},
+            "highlightSuffix":{"type":"string","description":"Suffix marker for highlights (default from env or ' <<<')"},
+            "full":{"type":"boolean"},
+            "includeNotes":{"type":"boolean"}
+        },"required":["query"]})),
         tool("sat_detail", "Fetch SAT detail by useid", json!({"type":"object","properties":{"useid":{"type":"string"},"key":{"type":"string"},"startChar":{"type":"number"},"maxChars":{"type":"number"}},"required":["useid"]})),
         tool("sat_fetch", "Fetch SAT page (prefer useid → detail URL)", json!({"type":"object","properties":{
             "url":{"type":"string"},
@@ -273,7 +244,24 @@ fn tools_list() -> Vec<serde_json::Value> {
             "autoFetch":{"type":"boolean"}
         },"required":["query"]})),
         tool("tipitaka_fetch", "Retrieve Tipitaka text by ID with section support and line-based context retrieval", json!({"type":"object","properties":{
-            "id":{"type":"string"},"query":{"type":"string"},"headIndex":{"type":"number"},"headQuery":{"type":"string"},"headingsLimit":{"type":"number"},"startChar":{"type":"number"},"endChar":{"type":"number"},"maxChars":{"type":"number"},"page":{"type":"number"},"pageSize":{"type":"number"},"lineNumber":{"type":"number","description":"Target line number for context extraction"},"contextBefore":{"type":"number","description":"Number of lines before target line (default: 10)"},"contextAfter":{"type":"number","description":"Number of lines after target line (default: 100)"},"contextLines":{"type":"number","description":"Number of lines before/after target line (deprecated, use contextBefore/contextAfter)"}
+            "id":{"type":"string"},
+            "query":{"type":"string"},
+            "headIndex":{"type":"number"},
+            "headQuery":{"type":"string"},
+            "headingsLimit":{"type":"number"},
+            "highlight":{"type":"string","description":"Highlight string or regex pattern (used with lineNumber-based context)"},
+            "highlightRegex":{"type":"boolean","description":"Interpret highlight as regex (default false)"},
+            "highlightPrefix":{"type":"string","description":"Prefix marker for highlights (default from env or '>>> ')"},
+            "highlightSuffix":{"type":"string","description":"Suffix marker for highlights (default from env or ' <<<')"},
+            "startChar":{"type":"number"},
+            "endChar":{"type":"number"},
+            "maxChars":{"type":"number"},
+            "page":{"type":"number"},
+            "pageSize":{"type":"number"},
+            "lineNumber":{"type":"number","description":"Target line number for context extraction"},
+            "contextBefore":{"type":"number","description":"Number of lines before target line (default: 10)"},
+            "contextAfter":{"type":"number","description":"Number of lines after target line (default: 100)"},
+            "contextLines":{"type":"number","description":"Number of lines before/after target line (deprecated, use contextBefore/contextAfter)"}
         }})),
         tool("tipitaka_search", "Fast regex content search across Tipitaka texts (returns line numbers)", json!({"type":"object","properties":{
             "query":{"type":"string","description":"Regular expression pattern to search for"},
@@ -292,51 +280,7 @@ fn handle_tools_list(id: serde_json::Value) -> serde_json::Value {
     json!({"jsonrpc":"2.0","id":id,"result": {"tools": tools_list()}})
 }
 
-fn normalized(s: &str) -> String {
-    use unicode_normalization::UnicodeNormalization;
-    let mut t: String = s.nfkd().collect::<String>().to_lowercase();
-    let map: [(&str,&str); 12] = [("経","經"),("经","經"),("观","觀"),("圣","聖"),("会","會"),("后","後"),("国","國"),("灵","靈"),("广","廣"),("龙","龍"),("台","臺"),("体","體")];
-    for (a,b) in map.iter() { t = t.replace(a, b); }
-    t.chars().filter(|c| c.is_alphanumeric()).collect()
-}
-
-fn normalized_with_spaces(s: &str) -> String {
-    use unicode_normalization::UnicodeNormalization;
-    let t: String = s.nfkd().collect::<String>().to_lowercase();
-    t.chars().map(|c| if c.is_alphanumeric() { c } else { ' ' }).collect::<String>()
-        .split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn normalized_pali(s: &str) -> String {
-    use unicode_normalization::UnicodeNormalization;
-    let t: String = s.nfkd().collect::<String>().to_lowercase();
-    // Remove common Pali diacritical marks for fuzzy matching
-    let t = t.chars().map(|c| match c {
-        // Long vowels -> short vowels
-        'ā' => 'a', 'ī' => 'i', 'ū' => 'u',
-        // Nasals and other marks
-        'ṅ' => 'n', 'ñ' => 'n', 'ṇ' => 'n', 'ṃ' => 'm',
-        // Dental/retroflex consonants
-        'ṭ' => 't', 'ḍ' => 'd', 'ḷ' => 'l',
-        // Other diacritical marks
-        'ṛ' => 'r', 'ḥ' => 'h', 'ṁ' => 'm',
-        _ => c
-    }).collect::<String>();
-    t.chars().filter(|c| c.is_alphanumeric()).collect()
-}
-
-fn tokenset(s: &str) -> std::collections::HashSet<String> {
-    normalized_with_spaces(s).split_whitespace().map(|w| w.to_string()).collect()
-}
-
-fn token_jaccard(a: &str, b: &str) -> f32 {
-    let sa: std::collections::HashSet<_> = tokenset(a);
-    let sb: std::collections::HashSet<_> = tokenset(b);
-    if sa.is_empty() || sb.is_empty() { return 0.0; }
-    let inter = sa.intersection(&sb).count() as f32;
-    let uni = (sa.len() + sb.len()).saturating_sub(inter as usize) as f32;
-    if uni == 0.0 { 0.0 } else { inter / uni }
-}
+// normalization and token similarity helpers are provided by daizo_core::text_utils
 
 fn load_or_build_cbeta_index() -> Vec<IndexEntry> {
     let out = cache_dir().join("cbeta-index.json");
@@ -382,128 +326,39 @@ struct ScoredHit<'a> { #[serde(skip_serializing)] entry: &'a IndexEntry, score: 
 
 fn best_match<'a>(entries: &'a [IndexEntry], q: &str, limit: usize) -> Vec<ScoredHit<'a>> {
     let nq = normalized(q);
-    let mut scored: Vec<(f32, &IndexEntry)> = entries.iter().map(|e| {
-        let meta_str = e.meta.as_ref().map(|m| m.values().cloned().collect::<Vec<_>>().join(" ")).unwrap_or_default();
-        let alias = e.meta.as_ref().and_then(|m| m.get("alias")).cloned().unwrap_or_default();
-        let hay_all = format!("{} {} {}", e.title, e.id, meta_str);
-        let hay = normalized(&hay_all);
-        let mut score = if hay.contains(&nq) { 1.0f32 } else {
-            let s_char = jaccard(&hay, &nq);
-            let s_tok = token_jaccard(&hay_all, q);
-            s_char.max(s_tok)
-        };
-        // subsequence boost
-        if score < 0.95 && (is_subsequence(&hay, &nq) || is_subsequence(&nq, &hay)) { score = score.max(0.85); }
-        // alias exact/contains boosts
-        let nalias = normalized_with_spaces(&alias).replace(' ', "");
-        let nq_nospace = normalized_with_spaces(q).replace(' ', "");
-        if !nalias.is_empty() {
-            if nalias.split_whitespace().any(|a| a == nq_nospace) || nalias.contains(&nq_nospace) {
-                score = score.max(0.95);
+    let mut scored: Vec<(f32, &IndexEntry)> = entries
+        .iter()
+        .map(|e| {
+            let mut s = daizo_core::text_utils::compute_match_score(e, q, false);
+            if let Some(meta) = &e.meta {
+                for k in ["author", "editor", "translator", "publisher"].iter() {
+                    if let Some(v) = meta.get(*k) {
+                        let nv = normalized(v);
+                        if !nv.is_empty() && (nv.contains(&nq) || nq.contains(&nv)) {
+                            s = s.max(0.93);
+                        }
+                    }
+                }
             }
-        }
-        // numeric pattern boost (e.g., 12.2)
-        if q.chars().any(|c| c.is_ascii_digit()) {
-            let hws = normalized_with_spaces(&hay_all);
-            if hws.contains(&normalized_with_spaces(q)) { score = (score + 0.05).min(1.0); }
-        }
-        (score, e)
-    }).collect();
+            (s, e)
+        })
+        .collect();
     scored.sort_by(|a,b| b.0.partial_cmp(&a.0).unwrap());
     scored.into_iter().take(limit).map(|(s,e)| ScoredHit { entry: e, score: s }).collect()
 }
 
 fn best_match_tipitaka<'a>(entries: &'a [IndexEntry], q: &str, limit: usize) -> Vec<ScoredHit<'a>> {
-    let nq = normalized(q);
-    let nq_pali = normalized_pali(q);
-    let mut scored: Vec<(f32, &IndexEntry)> = entries.iter().map(|e| {
-        let meta_str = e.meta.as_ref().map(|m| m.values().cloned().collect::<Vec<_>>().join(" ")).unwrap_or_default();
-        let alias = e.meta.as_ref().and_then(|m| m.get("alias")).cloned().unwrap_or_default();
-        let hay_all = format!("{} {} {}", e.title, e.id, meta_str);
-        let hay = normalized(&hay_all);
-        let hay_pali = normalized_pali(&hay_all);
-        
-        let mut score = if hay.contains(&nq) { 1.0f32 } else {
-            let s_char = jaccard(&hay, &nq);
-            let s_tok = token_jaccard(&hay_all, q);
-            // Add Pali fuzzy matching
-            let s_pali = jaccard(&hay_pali, &nq_pali);
-            s_char.max(s_tok).max(s_pali)
-        };
-        
-        // Pali fuzzy match boost - if Pali normalization gives a good match, boost score
-        if score < 0.95 && hay_pali.contains(&nq_pali) && nq_pali.len() > 2 {
-            score = score.max(0.9);
-        }
-        
-        // subsequence boost
-        if score < 0.95 && (is_subsequence(&hay, &nq) || is_subsequence(&nq, &hay) || is_subsequence(&hay_pali, &nq_pali)) { 
-            score = score.max(0.85); 
-        }
-        
-        // alias exact/contains boosts
-        let nalias = normalized_with_spaces(&alias).replace(' ', "");
-        let nalias_pali = normalized_pali(&alias);
-        let nq_nospace = normalized_with_spaces(q).replace(' ', "");
-        if !nalias.is_empty() {
-            if nalias.split_whitespace().any(|a| a == nq_nospace) || nalias.contains(&nq_nospace) || nalias_pali.contains(&nq_pali) {
-                score = score.max(0.95);
-            }
-        }
-        
-        // numeric pattern boost (e.g., 12.2)
-        if q.chars().any(|c| c.is_ascii_digit()) {
-            let hws = normalized_with_spaces(&hay_all);
-            if hws.contains(&normalized_with_spaces(q)) { score = (score + 0.05).min(1.0); }
-        }
-        (score, e)
-    }).collect();
+    let mut scored: Vec<(f32, &IndexEntry)> = entries
+        .iter()
+        .map(|e| (daizo_core::text_utils::compute_match_score(e, q, true), e))
+        .collect();
     scored.sort_by(|a,b| b.0.partial_cmp(&a.0).unwrap());
     scored.into_iter().take(limit).map(|(s,e)| ScoredHit { entry: e, score: s }).collect()
 }
 
-fn jaccard(a: &str, b: &str) -> f32 {
-    let sa: std::collections::HashSet<_> = a.as_bytes().windows(2).collect();
-    let sb: std::collections::HashSet<_> = b.as_bytes().windows(2).collect();
-    let inter = sa.intersection(&sb).count() as f32;
-    let uni = (sa.len() + sb.len()).saturating_sub(inter as usize) as f32;
-    if uni == 0.0 { 0.0 } else { inter / uni }
-}
+// jaccard and is_subsequence moved to daizo_core::text_utils
 
-fn is_subsequence(text: &str, pat: &str) -> bool {
-    let mut i = 0usize;
-    for ch in text.chars() {
-        if i < pat.len() && ch == pat.chars().nth(i).unwrap_or('\0') { i += 1; }
-        if i >= pat.len() { return true; }
-    }
-    i >= pat.len()
-}
-
-fn resolve_cbeta_path(id: &str) -> Option<PathBuf> {
-    // T0002 -> search for *n0002.xml under T/
-    let m = Regex::new(r"^([A-Za-z]+)(\d+)$").unwrap();
-    let root = cbeta_root();
-    if let Some(c) = m.captures(id) {
-        let canon = &c[1];
-        let num = &c[2];
-        for e in WalkDir::new(root.join(canon)).into_iter().filter_map(|e| e.ok()) {
-            if e.file_type().is_file() {
-                let name = e.file_name().to_string_lossy().to_lowercase();
-                if name.contains(&format!("n{}", num)) && name.ends_with(".xml") {
-                    return Some(e.path().to_path_buf());
-                }
-            }
-        }
-    }
-    // fallback: anywhere *id*.xml
-    for e in WalkDir::new(&root).into_iter().filter_map(|e| e.ok()) {
-        if e.file_type().is_file() {
-            let name = e.file_name().to_string_lossy().to_lowercase();
-            if name.contains(&id.to_lowercase()) && name.ends_with(".xml") { return Some(e.path().to_path_buf()); }
-        }
-    }
-    None
-}
+// resolve_cbeta_path moved to daizo_core::path_resolver
 
 // removed: unused helper
 
@@ -535,11 +390,42 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
     let content_text = match name {
         "cbeta_title_search" => {
-            let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            let q_raw = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            let looks_like_regex = q_raw.chars().any(|c| ".+*?[](){}|\\".contains(c));
+            let q = if q_raw.chars().any(|c| c.is_whitespace()) && !looks_like_regex {
+                to_whitespace_fuzzy_literal(q_raw)
+            } else { q_raw.to_string() };
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
             let idx = load_or_build_cbeta_index();
-            let hits = best_match(&idx, q, limit);
-            hits.iter().enumerate().map(|(i,h)| format!("{}. {}  {}", i+1, h.entry.id, h.entry.title)).collect::<Vec<_>>().join("\n")
+            let hits = best_match(&idx, &q, limit);
+            let summary = hits.iter().enumerate().map(|(i,h)| format!("{}. {}  {}", i+1, h.entry.id, h.entry.title)).collect::<Vec<_>>().join("\n");
+            let results: Vec<_> = hits.iter().map(|h| {
+                let meta = h.entry.meta.as_ref();
+                json!({
+                    "id": h.entry.id,
+                    "title": h.entry.title,
+                    "path": h.entry.path,
+                    "score": h.score,
+                    "meta": {
+                        "author": meta.and_then(|m| m.get("author").cloned()),
+                        "editor": meta.and_then(|m| m.get("editor").cloned()),
+                        "translator": meta.and_then(|m| m.get("translator").cloned()),
+                        "publisher": meta.and_then(|m| m.get("publisher").cloned()),
+                        "date": meta.and_then(|m| m.get("date").cloned()),
+                        "idno": meta.and_then(|m| m.get("idno").cloned()),
+                        "canon": meta.and_then(|m| m.get("canon").cloned()),
+                        "nnum": meta.and_then(|m| m.get("nnum").cloned()),
+                        "juanCount": meta.and_then(|m| m.get("juanCount").cloned()),
+                        "headsPreview": meta.and_then(|m| m.get("headsPreview").cloned()),
+                        "respAll": meta.and_then(|m| m.get("respAll").cloned()),
+                    }
+                })
+            }).collect();
+            let meta = json!({
+                "count": results.len(),
+                "results": results
+            });
+            return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary }], "_meta": meta }});
         }
         "cbeta_fetch" => {
             ensure_cbeta_data();
@@ -555,7 +441,7 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                     matched_title = Some(hit.title.clone());
                     path = PathBuf::from(&hit.path);
                 } else {
-                    path = resolve_cbeta_path(id).unwrap_or_else(|| PathBuf::from(""));
+                    path = resolve_cbeta_path_by_id(id).unwrap_or_else(|| PathBuf::from(""));
                     matched_id = Some(id.to_string());
                 }
             } else if let Some(q) = args.get("query").and_then(|v| v.as_str()) {
@@ -586,14 +472,64 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                 if let Some(sec) = extract_cbeta_juan(&xml, part) { (sec, "cbeta-juan".to_string(), true) } else { (extract_text_opts(&xml, include_notes), "full".to_string(), false) }
             } else { (extract_text_opts(&xml, include_notes), "full".to_string(), false) };
             
-            let sliced = slice_text(&text, &args);
+            let full_flag = args.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
+            let mut sliced = if full_flag { text.clone() } else { slice_text(&text, &args) };
+            // Optional highlight across sliced text
+            let mut highlight_count = 0usize;
+            let mut highlight_positions: Vec<serde_json::Value> = Vec::new();
+            if let Some(hpat) = args.get("highlight").and_then(|v| v.as_str()) {
+                let use_re = args.get("highlightRegex").and_then(|v| v.as_bool()).unwrap_or(false);
+                let hpre = args.get("highlightPrefix").and_then(|v| v.as_str()).unwrap_or(">>> ");
+                let hsuf = args.get("highlightSuffix").and_then(|v| v.as_str()).unwrap_or(" <<<");
+                let original = sliced.clone();
+                if use_re {
+                    if let Ok(re) = regex::Regex::new(hpat) {
+                        for m in re.find_iter(&original) {
+                            let sb = m.start();
+                            let eb = m.end();
+                            let sc = original[..sb].chars().count();
+                            let ec = sc + original[sb..eb].chars().count();
+                            highlight_positions.push(json!({"startChar": sc, "endChar": ec}));
+                        }
+                        let mut count = 0usize;
+                        let replaced = re.replace_all(&sliced, |caps: &regex::Captures| {
+                            count += 1;
+                            format!("{}{}{}", hpre, &caps[0], hsuf)
+                        });
+                        sliced = replaced.into_owned();
+                        highlight_count = count;
+                    }
+                } else if !hpat.is_empty() {
+                    let mut i = 0usize;
+                    while let Some(pos) = original[i..].find(hpat) {
+                        let abs = i + pos;
+                        let sc = original[..abs].chars().count();
+                        let ec = sc + hpat.chars().count();
+                        highlight_positions.push(json!({"startChar": sc, "endChar": ec}));
+                        i = abs + hpat.len();
+                    }
+                    let mut out = String::with_capacity(sliced.len());
+                    let mut j = 0usize;
+                    while let Some(pos) = sliced[j..].find(hpat) {
+                        let abs = j + pos;
+                        out.push_str(&sliced[j..abs]);
+                        out.push_str(hpre);
+                        out.push_str(hpat);
+                        out.push_str(hsuf);
+                        j = abs + hpat.len();
+                        highlight_count += 1;
+                    }
+                    out.push_str(&sliced[j..]);
+                    sliced = out;
+                }
+            }
             let heads = list_heads_cbeta(&xml);
             let hl = args.get("headingsLimit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
             let meta = json!({
                 "totalLength": text.len(),
                 "returnedStart": args.get("startChar").and_then(|v| v.as_u64()).unwrap_or( args.get("page").and_then(|v| v.as_u64()).and_then(|p| args.get("pageSize").and_then(|s| s.as_u64()).map(|ps| p*ps)).unwrap_or(0) ) ,
                 "returnedEnd": args.get("startChar").and_then(|v| v.as_u64()).unwrap_or( args.get("page").and_then(|v| v.as_u64()).and_then(|p| args.get("pageSize").and_then(|s| s.as_u64()).map(|ps| p*ps)).unwrap_or(0) ) + (sliced.len() as u64),
-                "truncated": (sliced.len() as u64) < (text.len() as u64),
+                "truncated": if full_flag { false } else { (sliced.len() as u64) < (text.len() as u64) },
                 "sourcePath": path.to_string_lossy(),
                 "extractionMethod": extraction_method,
                 "partMatched": part_matched,
@@ -602,6 +538,8 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                 "matchedId": matched_id,
                 "matchedTitle": matched_title,
                 "matchedScore": matched_score,
+                "highlighted": if highlight_count > 0 { Some(highlight_count) } else { None::<usize> },
+                "highlightPositions": if highlight_positions.is_empty() { None::<Vec<serde_json::Value>> } else { Some(highlight_positions) },
             });
             return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": sliced}], "_meta": meta }});
         }
@@ -620,42 +558,16 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
             // 修正: IDがある場合は優先してqueryを無視
             let mut path: PathBuf = if let Some(id) = args.get("id").and_then(|v| v.as_str()) {
                 let idx = load_or_build_tipitaka_index();
-                // まずは完全一致（stem == id）
-                let mut exact: Option<PathBuf> = None;
-                for e in idx.iter() {
-                    if Path::new(&e.path).file_stem().map(|s| s == id).unwrap_or(false) {
-                        exact = Some(PathBuf::from(&e.path));
+                if let Some(p) = resolve_tipitaka_by_id(&idx, id) {
+                    // fill matched info from the resolved path
+                    matched_id = Path::new(&p).file_stem().map(|s| s.to_string_lossy().into_owned());
+                    if let Some(e) = idx.iter().find(|e| e.path == p.to_string_lossy()) {
                         matched_title = Some(e.title.clone());
-                        matched_id = Some(id.to_string());
-                        break;
                     }
+                    p
+                } else {
+                    PathBuf::new()
                 }
-                // 次に接頭一致（stem が id + 数字 で始まるもののうち最小番号）
-                let mut best_seq: Option<(u32, PathBuf, &str)> = None;
-                if exact.is_none() {
-                    for e in idx.iter() {
-                        if let Some(stem) = Path::new(&e.path).file_stem().and_then(|s| s.to_str()) {
-                            if let Some(rest) = stem.strip_prefix(id) {
-                                // 記号（例: ".toc"）は除外し、末尾の数字のみを対象
-                                let digits = rest.chars().take_while(|c| c.is_ascii_digit()).collect::<String>();
-                                if !digits.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
-                                    if let Ok(n) = digits.parse::<u32>() {
-                                        let take = match &best_seq { Some((bn,_,_)) => n < *bn, None => true };
-                                        if take {
-                                            best_seq = Some((n, PathBuf::from(&e.path), e.title.as_str()));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if let Some((_, _, t)) = &best_seq { matched_title = Some((*t).to_string()); matched_id = Some(id.to_string()); }
-                }
-                exact
-                    .or(best_seq.map(|(_,p,_)| p))
-                    .or_else(|| find_tipitaka_content_for_base(id))
-                    .or_else(|| find_in_dir(&tipitaka_root(), id))
-                    .unwrap_or_else(|| PathBuf::new())
             } else if let Some(q) = args.get("query").and_then(|v| v.as_str()) {
                 let idx = load_or_build_tipitaka_index();
                 if let Some(hit) = best_match_tipitaka(&idx, q, 1).into_iter().next() {
@@ -748,7 +660,44 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                     if !t.trim().is_empty() { text = t; extraction_method = "plain-strip-tags".to_string(); }
                 }
             }
-            let sliced = slice_text(&text, &args);
+            let mut sliced = slice_text(&text, &args);
+            // Optional highlight for Tipitaka
+            let hl_in = args.get("highlight").and_then(|v| v.as_str());
+            let mut hl_regex = args.get("highlightRegex").and_then(|v| v.as_bool()).unwrap_or(false);
+            let hpre = args.get("highlightPrefix").and_then(|v| v.as_str()).map(|s| s.to_string())
+                .or_else(|| std::env::var("DAIZO_HL_PREFIX").ok()).unwrap_or_else(|| ">>> ".to_string());
+            let hsuf = args.get("highlightSuffix").and_then(|v| v.as_str()).map(|s| s.to_string())
+                .or_else(|| std::env::var("DAIZO_HL_SUFFIX").ok()).unwrap_or_else(|| " <<<".to_string());
+            let mut highlight_positions: Vec<serde_json::Value> = Vec::new();
+            let mut highlight_count = 0usize;
+            if let Some(hpat0) = hl_in {
+                let looks_like_regex = hpat0.chars().any(|c| ".+*?[](){}|\\".contains(c));
+                let hpat = if hpat0.chars().any(|c| c.is_whitespace()) && !looks_like_regex && !hl_regex { hl_regex = true; to_whitespace_fuzzy_literal(hpat0) } else { hpat0.to_string() };
+                if hl_regex {
+                    if let Ok(re) = Regex::new(&hpat) {
+                        for m in re.find_iter(&sliced) {
+                            let sb = m.start(); let eb = m.end();
+                            let sc = sliced[..sb].chars().count(); let ec = sc + sliced[sb..eb].chars().count();
+                            highlight_positions.push(json!({"startChar": sc, "endChar": ec}));
+                        }
+                        let mut count = 0usize;
+                        let replaced = re.replace_all(&sliced, |caps: &regex::Captures| { count += 1; format!("{}{}{}", hpre, &caps[0], hsuf) });
+                        sliced = replaced.into_owned();
+                        highlight_count = count;
+                    }
+                } else if !hpat.is_empty() {
+                    let mut i = 0usize;
+                    while let Some(pos) = sliced[i..].find(&hpat) {
+                        let abs = i + pos; let sc = sliced[..abs].chars().count(); let ec = sc + hpat.chars().count();
+                        highlight_positions.push(json!({"startChar": sc, "endChar": ec}));
+                        i = abs + hpat.len();
+                    }
+                    let mut out = String::with_capacity(sliced.len()); let mut j = 0usize;
+                    while let Some(pos) = sliced[j..].find(&hpat) {
+                        let abs = j + pos; out.push_str(&sliced[j..abs]); out.push_str(&hpre); out.push_str(&hpat); out.push_str(&hsuf); j = abs + hpat.len(); highlight_count += 1; }
+                    out.push_str(&sliced[j..]); sliced = out;
+                }
+            }
             let heads = list_heads_generic(&xml);
             let hl = args.get("headingsLimit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
             let meta = json!({
@@ -764,6 +713,8 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                 "matchedTitle": matched_title,
                 "matchedScore": matched_score,
                 "biblio": tipitaka_biblio(&xml),
+                "highlighted": if highlight_count > 0 { Some(highlight_count) } else { None::<usize> },
+                "highlightPositions": if highlight_positions.is_empty() { None::<Vec<serde_json::Value>> } else { Some(highlight_positions) },
             });
             return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": sliced}], "_meta": meta }});
         }
@@ -902,12 +853,16 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
             }
         }
         "cbeta_search" => {
-            let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            let q_raw = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            let looks_like_regex = q_raw.chars().any(|c| ".+*?[](){}|\\".contains(c));
+            let q = if q_raw.chars().any(|c| c.is_whitespace()) && !looks_like_regex {
+                to_whitespace_fuzzy_literal(q_raw)
+            } else { q_raw.to_string() };
             let max_results = args.get("maxResults").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
             let max_matches_per_file = args.get("maxMatchesPerFile").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
             
             ensure_cbeta_data();
-            let results = cbeta_grep(&cbeta_root(), q, max_results, max_matches_per_file);
+            let results = cbeta_grep(&cbeta_root(), &q, max_results, max_matches_per_file);
             
             let mut summary = format!("Found {} files with matches for '{}':\n\n", results.len(), q);
             for (i, result) in results.iter().enumerate() {
@@ -939,13 +894,166 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
             
             return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary}], "_meta": meta }});
         }
-        "tipitaka_search" => {
+        "cbeta_pipeline" => {
             let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            let max_results = args.get("maxResults").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+            let max_matches_per_file = args.get("maxMatchesPerFile").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
+            let context_before = args.get("contextBefore").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+            let context_after = args.get("contextAfter").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
+            let auto_fetch = args.get("autoFetch").and_then(|v| v.as_bool()).unwrap_or(false);
+            let auto_fetch_files = args.get("autoFetchFiles").and_then(|v| v.as_u64()).map(|x| x as usize).unwrap_or_else(|| if auto_fetch { 1 } else { 0 });
+            let auto_fetch_matches = args.get("autoFetchMatches").and_then(|v| v.as_u64()).map(|x| x as usize);
+            let include_match_line = args.get("includeMatchLine").and_then(|v| v.as_bool()).unwrap_or(true);
+            let include_highlight_snippet = args.get("includeHighlightSnippet").and_then(|v| v.as_bool()).unwrap_or(true);
+            let min_snippet_len = args.get("minSnippetLen").and_then(|v| v.as_u64()).map(|x| x as usize).unwrap_or(0);
+            // highlight/snippet markers with env fallbacks
+            let hl_in = args.get("highlight").and_then(|v| v.as_str());
+            let mut hl_regex = args.get("highlightRegex").and_then(|v| v.as_bool()).unwrap_or(false);
+            let hl_pat: Option<String> = hl_in.map(|p| {
+                let looks_like_regex_hl = p.chars().any(|c| ".+*?[](){}|\\".contains(c));
+                if p.chars().any(|c| c.is_whitespace()) && !looks_like_regex_hl && !hl_regex {
+                    hl_regex = true; // 空白を含む素朴な文字列 → \\s* に畳んだ正規表現として扱う
+                    to_whitespace_fuzzy_literal(p)
+                } else { p.to_string() }
+            });
+            let hl_pre = args.get("highlightPrefix").and_then(|v| v.as_str()).map(|s| s.to_string())
+                .or_else(|| std::env::var("DAIZO_HL_PREFIX").ok())
+                .unwrap_or_else(|| ">>> ".to_string());
+            let hl_suf = args.get("highlightSuffix").and_then(|v| v.as_str()).map(|s| s.to_string())
+                .or_else(|| std::env::var("DAIZO_HL_SUFFIX").ok())
+                .unwrap_or_else(|| " <<<".to_string());
+            let snip_pre = args.get("snippetPrefix").and_then(|v| v.as_str()).map(|s| s.to_string())
+                .or_else(|| std::env::var("DAIZO_SNIPPET_PREFIX").ok())
+                .unwrap_or_else(|| ">>> ".to_string());
+            let snip_suf = args.get("snippetSuffix").and_then(|v| v.as_str()).map(|s| s.to_string())
+                .or_else(|| std::env::var("DAIZO_SNIPPET_SUFFIX").ok())
+                .unwrap_or_else(String::new);
+            let full = args.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
+            let include_notes = args.get("includeNotes").and_then(|v| v.as_bool()).unwrap_or(false);
+
+            ensure_cbeta_data();
+            let results = cbeta_grep(&cbeta_root(), &q, max_results, max_matches_per_file);
+
+            // Build summary and suggestions
+            let mut summary = format!("Found {} files with matches for '{}':\n\n", results.len(), q);
+            let mut suggestions: Vec<serde_json::Value> = Vec::new();
+            for (i, result) in results.iter().enumerate() {
+                summary.push_str(&format!("{}. {} ({})\n", i + 1, result.title, result.file_id));
+                summary.push_str(&format!("   {} matches\n", result.total_matches));
+                for (j, m) in result.matches.iter().enumerate().take(2) {
+                    summary.push_str(&format!("   Match {}: ...{}...\n", j + 1, m.context.chars().take(100).collect::<String>()));
+                }
+                if let Some(m) = result.matches.first() {
+                    if let Some(ln) = m.line_number { suggestions.push(json!({
+                        "tool": "cbeta_fetch", "args": {"id": result.file_id, "lineNumber": ln, "contextBefore": context_before, "contextAfter": context_after}
+                    })); }
+                }
+                summary.push('\n');
+            }
+
+            let mut content_items: Vec<serde_json::Value> = vec![json!({"type":"text","text": summary})];
+            let mut meta = json!({
+                "searchPattern": q,
+                "totalFiles": results.len(),
+                "results": results,
+                "fetchSuggestions": suggestions
+            });
+
+            if auto_fetch && auto_fetch_files > 0 {
+                let take_files = std::cmp::min(auto_fetch_files, results.len());
+                let mut fetched: Vec<serde_json::Value> = Vec::new();
+                for r in results.iter().take(take_files) {
+                    let xml = fs::read_to_string(&r.file_path).unwrap_or_default();
+                    if full {
+                        let text = if include_notes { extract_text_opts(&xml, true) } else { extract_text(&xml) };
+                        let sliced = slice_text(&text, &json!({"startChar": 0, "endChar": text.chars().count()}));
+                        content_items.push(json!({"type":"text","text": sliced}));
+                        fetched.push(json!({"id": r.file_id, "full": true, "returnedChars": sliced.chars().count()}));
+                    } else {
+                        let mut combined = String::new();
+                        let mut count = 0usize;
+                        let mut highlight_counts: Vec<usize> = Vec::new();
+                        let mut file_highlights: Vec<Vec<serde_json::Value>> = Vec::new();
+                        let per_file_limit = auto_fetch_matches.unwrap_or(max_matches_per_file);
+                        for m in r.matches.iter().take(per_file_limit) {
+                            if let Some(ln) = m.line_number {
+                                let mut ctx = daizo_core::extract_xml_around_line_asymmetric(&xml, ln, context_before, context_after);
+                                if !include_match_line {
+                                    // best-effort: remove central line (position = context_before)
+                                    let mut lines: Vec<&str> = ctx.lines().collect();
+                                    if context_before < lines.len() { lines.remove(context_before); }
+                                    ctx = lines.join("\n");
+                                }
+                                if !ctx.trim().is_empty() {
+                        if !combined.is_empty() { combined.push_str("\n\n---\n\n"); }
+                        if include_highlight_snippet && !m.highlight.trim().is_empty() && m.highlight.trim().chars().count() >= min_snippet_len {
+                            combined.push_str(&format!("{}{}{}\n\n", snip_pre, m.highlight.trim(), snip_suf));
+                        }
+                        // optional in-context highlighting and positions per context
+                        let mut chigh: Vec<serde_json::Value> = Vec::new();
+                        if let Some(pats) = hl_pat.as_deref() {
+                            if hl_regex {
+                                if let Ok(re) = regex::Regex::new(pats) {
+                                    for mm in re.find_iter(&ctx) {
+                                        let sb = mm.start(); let eb = mm.end();
+                                        let sc = ctx[..sb].chars().count(); let ec = sc + ctx[sb..eb].chars().count();
+                                        chigh.push(json!({"startChar": sc, "endChar": ec}));
+                                    }
+                                    ctx = re.replace_all(&ctx, |caps: &regex::Captures| format!("{}{}{}", hl_pre, &caps[0], hl_suf)).into_owned();
+                                }
+                            } else if !pats.is_empty() {
+                                let mut i = 0usize;
+                                while let Some(pos) = ctx[i..].find(pats) {
+                                    let abs = i + pos; let sc = ctx[..abs].chars().count(); let ec = sc + pats.chars().count();
+                                    chigh.push(json!({"startChar": sc, "endChar": ec}));
+                                    i = abs + pats.len();
+                                }
+                                let mut out = String::with_capacity(ctx.len()); let mut j = 0usize;
+                                while let Some(pos) = ctx[j..].find(pats) {
+                                    let abs = j + pos; out.push_str(&ctx[j..abs]); out.push_str(&hl_pre); out.push_str(pats); out.push_str(&hl_suf); j = abs + pats.len();
+                                }
+                                out.push_str(&ctx[j..]); ctx = out;
+                            }
+                        }
+                        combined.push_str(&format!("# {} (line {})\n\n{}", r.file_id, ln, ctx));
+                        highlight_counts.push(chigh.len());
+                        file_highlights.push(chigh);
+                                    count += 1;
+                                }
+                            }
+                        }
+                        if !combined.is_empty() {
+                            content_items.push(json!({"type":"text","text": combined}));
+                            let mut fobj = json!({
+                                "id": r.file_id,
+                                "full": false,
+                                "contexts": count,
+                                "contextBefore": context_before,
+                                "contextAfter": context_after,
+                                "includeMatchLine": include_match_line,
+                            });
+                            if highlight_counts.iter().any(|&c| c > 0) { fobj["highlightCounts"] = json!(highlight_counts); }
+                            fobj["highlightPositions"] = json!(file_highlights);
+                            fetched.push(fobj);
+                        }
+                    }
+                }
+                if !fetched.is_empty() { meta["autoFetched"] = json!(fetched); }
+            }
+
+            return json!({"jsonrpc":"2.0","id": id, "result": { "content": content_items, "_meta": meta }});
+        }
+        "tipitaka_search" => {
+            let q_raw = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            let looks_like_regex = q_raw.chars().any(|c| ".+*?[](){}|\\".contains(c));
+            let q = if q_raw.chars().any(|c| c.is_whitespace()) && !looks_like_regex {
+                to_whitespace_fuzzy_literal(q_raw)
+            } else { q_raw.to_string() };
             let max_results = args.get("maxResults").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
             let max_matches_per_file = args.get("maxMatchesPerFile").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
             
             ensure_tipitaka_data();
-            let results = tipitaka_grep(&tipitaka_root(), q, max_results, max_matches_per_file);
+            let results = tipitaka_grep(&tipitaka_root(), &q, max_results, max_matches_per_file);
             
             let mut summary = format!("Found {} files with matches for '{}':\n\n", results.len(), q);
             for (i, result) in results.iter().enumerate() {
@@ -986,52 +1094,7 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
     })
 }
 
-fn find_in_dir(root: &Path, stem_hint: &str) -> Option<PathBuf> {
-    for e in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
-        if e.file_type().is_file() {
-            if let Some(stem) = e.path().file_stem().and_then(|s| s.to_str()) {
-                if stem.to_lowercase().contains(&stem_hint.to_lowercase()) && e.path().extension().and_then(|s| s.to_str()) == Some("xml") {
-                    return Some(e.path().to_path_buf());
-                }
-            }
-        }
-    }
-    None
-}
-
-fn find_tipitaka_content_for_base(base: &str) -> Option<PathBuf> {
-    // Prefer ...base0.xml, then lowest-numbered ...base{n}.xml, excluding TOC-like files
-    let root = tipitaka_root();
-    let mut best: Option<(u32, PathBuf)> = None;
-    for e in WalkDir::new(&root).into_iter().filter_map(|e| e.ok()) {
-        if e.file_type().is_file() {
-            let p = e.path();
-            if p.extension().and_then(|s| s.to_str()) != Some("xml") { continue; }
-            let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
-            if !name.contains(&base.to_lowercase()) { continue; }
-            if name.contains("toc") || name.contains("sitemap") || name.contains("tree") { continue; }
-            // try to parse trailing number before .xml
-            let num = name.trim_end_matches(".xml").chars().rev().take_while(|c| c.is_ascii_digit()).collect::<String>();
-            let n = num.chars().rev().collect::<String>();
-            let rank = if n.is_empty() { u32::MAX } else { n.parse::<u32>().unwrap_or(u32::MAX) };
-            if best.as_ref().map(|(bn,_)| rank < *bn).unwrap_or(true) {
-                best = Some((rank, p.to_path_buf()));
-            }
-        }
-    }
-    best.map(|(_,p)| p)
-}
-
-fn find_exact_file_by_name(root: &Path, filename: &str) -> Option<PathBuf> {
-    for e in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
-        if e.file_type().is_file() {
-            if let Some(name) = e.path().file_name().and_then(|s| s.to_str()) {
-                if name.eq_ignore_ascii_case(filename) { return Some(e.path().to_path_buf()); }
-            }
-        }
-    }
-    None
-}
+// find_tipitaka_content_for_base and find_exact_file_by_name moved to daizo_core::path_resolver
 
 fn cache_path_for(url: &str) -> PathBuf {
     let mut hasher = Sha1::new();
@@ -1373,6 +1436,8 @@ fn normalize_ws(s: &str) -> String {
 }
 
 fn main() -> Result<()> {
+    // Initialize optional repo policy from env (rate limits / future robots compliance)
+    daizo_core::repo::init_policy_from_env();
     let stdin = std::io::stdin();
     let mut stdin = BufReader::new(stdin.lock());
     let mut stdout = std::io::stdout();
