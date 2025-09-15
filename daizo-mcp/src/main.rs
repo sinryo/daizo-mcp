@@ -186,7 +186,7 @@ fn handle_initialize(id: serde_json::Value) -> serde_json::Value {
                 },
                 "logging": {}
             },
-            .3.3" }
+            .3.3" }
         }
     })
 }
@@ -212,7 +212,7 @@ fn handle_initialize(id: serde_json::Value) -> serde_json::Value {
                 },
                 "logging": {}
             },
-            .3.5" }
+            .3.5" }
         }
     })
 }

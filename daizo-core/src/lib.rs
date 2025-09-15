@@ -764,8 +764,8 @@ pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
             if let Some(nf) = &nikaya_fold {
                 if nf.contains("digha") { alias_prefix = Some("DN"); }
                 else if nf.contains("majjhima") { alias_prefix = Some("MN"); }
-                else if nf.contains("samyutta") || nf.contains("saṃyutta") || nf.contains("samyutta") { alias_prefix = Some("SN"); }
-                else if nf.contains("anguttara") || nf.contains("agguttara") || nf.contains("aṅguttara") { alias_prefix = Some("AN"); }
+                else if nf.contains("samyutta") || nf.contains("saṃyutta") || nf.contains("samyutta") { alias_prefix = Some("SN"); }
+                else if nf.contains("anguttara") || nf.contains("agguttara") || nf.contains("aṅguttara") { alias_prefix = Some("AN"); }
                 else if nf.contains("khuddaka") { alias_prefix = Some("KN"); }
             }
             if let Some(prefix) = alias_prefix {
