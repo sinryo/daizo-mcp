@@ -165,6 +165,7 @@ fn save_index(path: &Path, entries: &Vec<IndexEntry>) -> Result<()> { ensure_dir
 
 // ============ Tool handlers ============
 
+/*
 fn handle_initialize(id: serde_json::Value) -> serde_json::Value {
     json!({
         "jsonrpc": "2.0",
@@ -186,6 +187,32 @@ fn handle_initialize(id: serde_json::Value) -> serde_json::Value {
                 "logging": {}
             },
             .3.3" }
+        }
+    })
+}
+*/
+
+fn handle_initialize(id: serde_json::Value) -> serde_json::Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {
+                "tools": {},
+                "resources": {},
+                "prompts": {
+                    "low-token-guide": {
+                        "name": "low-token-guide",
+                        "description": "Guidance for AI to use search→fetch (lineNumber) instead of pipeline by default to minimize tokens.",
+                        "messages": [
+                            {"role": "system", "content": "Prefer low-token flow: 1) *_search to locate files, 2) read _meta.fetchSuggestions, 3) call *_fetch with {id, lineNumber, contextBefore:1, contextAfter:3}. Use *_pipeline only when you need a cross-file summary; set autoFetch=false by default."}
+                        ]
+                    }
+                },
+                "logging": {}
+            },
+            "serverInfo": { "name": "daizo-mcp", "version": "0.3.3" }
         }
     })
 }
