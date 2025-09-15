@@ -185,7 +185,7 @@ fn handle_initialize(id: serde_json::Value) -> serde_json::Value {
                 },
                 "logging": {}
             },
-            .3.6" }
+            "serverInfo": { "name": "daizo-mcp", "version": "0.3.6" }
         }
     })
 }
