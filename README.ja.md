@@ -1,13 +1,13 @@
 # daizo-mcp
 
-CBETA（漢文）、パーリ三蔵（ローマ字）、SAT（オンライン）に対応した、高速な仏教テキスト検索・取得のための MCP サーバーおよび CLI です。Rust で実装し、高速・堅牢に動作します。
+CBETA（漢文）、パーリ三蔵（ローマ字）、GRETIL（サンスクリット TEI）、SAT（オンライン）に対応した、高速な仏教テキスト検索・取得のための MCP サーバーおよび CLI です。Rust で実装し、高速・堅牢に動作します。
 
 関連: [English README](README.md) | [繁體中文 README](README.zh-TW.md)
 
 ## 特長
 
-- CBETA / Tipitaka に対する高速な正規表現検索（行番号つき）
-- タイトル検索（CBETA / Tipitaka）
+- CBETA / Tipitaka / GRETIL に対する高速な正規表現検索（行番号つき）
+- タイトル検索（CBETA / Tipitaka / GRETIL）
 - 行番号や文字位置での前後コンテキスト取得
 - SAT オンライン検索（スマートキャッシュ付き）
 - ワンコマンド・ブートストラップとインデックス構築
@@ -56,6 +56,7 @@ daizo-cli tipitaka-title-search --query "dn 1" --json
 # 内容検索（行番号つき）
 daizo-cli cbeta-search --query "阿弥陀" --max-results 10
 daizo-cli tipitaka-search --query "nibbana|vipassana" --max-results 15
+daizo-cli gretil-search --query "yoga" --max-results 10
 ```
 
 取得:
@@ -64,6 +65,7 @@ daizo-cli tipitaka-search --query "nibbana|vipassana" --max-results 15
 # ID 指定で取得
 daizo-cli cbeta-fetch --id T0858 --part 1 --max-chars 4000 --json
 daizo-cli tipitaka-fetch --id e0101n.mul --max-chars 2000 --json
+daizo-cli gretil-fetch --query "Bhagavadgita" --max-chars 4000 --json
 
 # 行番号の前後コンテキスト
 daizo-cli cbeta-fetch --id T0858 --line-number 342 --context-before 10 --context-after 200
@@ -85,17 +87,20 @@ daizo-cli update --yes              # CLI の再インストール
 検索:
 - `cbeta_title_search`, `cbeta_search`
 - `tipitaka_title_search`, `tipitaka_search`
+- `gretil_title_search`, `gretil_search`
 - `sat_search`
 
 取得:
 - `cbeta_fetch`（`lineNumber`, `contextBefore`, `contextAfter` をサポート）
 - `tipitaka_fetch`（`lineNumber`, `contextBefore`, `contextAfter` をサポート）
+- `gretil_fetch`（`lineNumber`, `contextBefore`, `contextAfter` をサポート）
 - `sat_fetch`, `sat_pipeline`
 
 ## データソース
 
 - CBETA: https://github.com/cbeta-org/xml-p5
 - Tipitaka (romanized): https://github.com/VipassanaTech/tipitaka-xml
+- GRETIL (Sanskrit TEI): https://gretil.sub.uni-goettingen.de/
 - SAT (online): wrap7 / detail エンドポイント
 
 ## ディレクトリと環境変数

@@ -1,13 +1,13 @@
 # daizo-mcp
 
-面向 CBETA（中文）、巴利三藏（羅馬化）與 SAT（線上）的高速佛典搜尋與擷取。包含 MCP 伺服器與 CLI，採用 Rust 實作，專注於速度與穩定性。
+面向 CBETA（中文）、巴利三藏（羅馬化）、GRETIL（梵文 TEI）與 SAT（線上）的高速佛典搜尋與擷取。包含 MCP 伺服器與 CLI，採用 Rust 實作，專注於速度與穩定性。
 
 相關: [English README](README.md) | [日本語 README](README.ja.md)
 
 ## 亮點
 
-- CBETA / Tipitaka 文字內容快速正則搜尋（附行號）
-- 標題搜尋（CBETA / Tipitaka）
+- CBETA / Tipitaka / GRETIL 文字內容快速正則搜尋（附行號）
+- 標題搜尋（CBETA / Tipitaka / GRETIL）
 - 以行號或字元範圍精準擷取上下文
 - SAT 線上搜尋（含智慧快取）
 - 一鍵初始化與索引建置
@@ -56,6 +56,7 @@ daizo-cli tipitaka-title-search --query "dn 1" --json
 # 內容搜尋（附行號）
 daizo-cli cbeta-search --query "阿彌陀" --max-results 10
 daizo-cli tipitaka-search --query "nibbana|vipassana" --max-results 15
+daizo-cli gretil-search --query "yoga" --max-results 10
 ```
 
 取得：
@@ -64,6 +65,7 @@ daizo-cli tipitaka-search --query "nibbana|vipassana" --max-results 15
 # 依 ID 取得
 daizo-cli cbeta-fetch --id T0858 --part 1 --max-chars 4000 --json
 daizo-cli tipitaka-fetch --id e0101n.mul --max-chars 2000 --json
+daizo-cli gretil-fetch --query "Bhagavadgita" --max-chars 4000 --json
 
 # 行號上下文（搜尋後）
 daizo-cli cbeta-fetch --id T0858 --line-number 342 --context-before 10 --context-after 200
@@ -85,17 +87,20 @@ daizo-cli update --yes              # 重新安裝 CLI
 搜尋：
 - `cbeta_title_search`, `cbeta_search`
 - `tipitaka_title_search`, `tipitaka_search`
+- `gretil_title_search`, `gretil_search`
 - `sat_search`
 
 取得：
 - `cbeta_fetch`（支援 `lineNumber`, `contextBefore`, `contextAfter`）
 - `tipitaka_fetch`（支援 `lineNumber`, `contextBefore`, `contextAfter`）
+- `gretil_fetch`（支援 `lineNumber`, `contextBefore`, `contextAfter`）
 - `sat_fetch`, `sat_pipeline`
 
 ## 資料來源
 
 - CBETA: https://github.com/cbeta-org/xml-p5
 - Tipitaka（羅馬化）: https://github.com/VipassanaTech/tipitaka-xml
+- GRETIL（梵文 TEI）: https://gretil.sub.uni-goettingen.de/
 - SAT（線上）: wrap7 / detail 端點
 
 ## 目錄與環境變數
