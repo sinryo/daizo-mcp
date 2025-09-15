@@ -976,12 +976,29 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                 }
                 summary.push('\n');
             }
-            
-            let meta = json!({
+            // Lightweight next-call hints for AI clients (low token cost)
+            let hint_top = std::env::var("DAIZO_HINT_TOP").ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or(1);
+            let mut fetch_suggestions: Vec<serde_json::Value> = Vec::new();
+            for r in results.iter().take(hint_top) {
+                if let Some(m) = r.matches.first() { if let Some(ln) = m.line_number {
+                    fetch_suggestions.push(json!({
+                        "tool": "cbeta_fetch",
+                        "args": {"id": r.file_id, "lineNumber": ln, "contextBefore": 1, "contextAfter": 3},
+                        "mode": "low-cost"
+                    }));
+                }}
+            }
+            let mut meta = json!({
                 "searchPattern": q,
                 "totalFiles": results.len(),
                 "results": results,
-                "hint": "Use cbeta_fetch with the file_id and recommended parts to get full content"
+                "hint": "Use cbeta_fetch (id + lineNumber) for low-cost context; cbeta_pipeline with autoFetch=false to summarize",
+                "fetchSuggestions": fetch_suggestions
+            });
+            // Optional pipeline hint (kept minimal)
+            meta["pipelineHint"] = json!({
+                "tool": "cbeta_pipeline",
+                "args": {"query": q, "autoFetch": false, "maxResults": 5, "maxMatchesPerFile": 1, "includeHighlightSnippet": false, "includeMatchLine": true }
             });
             
             return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary}], "_meta": meta }});
@@ -1255,7 +1272,29 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                 if result.matches.len() > 2 { summary.push_str(&format!("   ... and {} more matches\n", result.matches.len() - 2)); }
                 summary.push('\n');
             }
-            let meta = json!({ "searchPattern": q, "totalFiles": results.len(), "results": results, "hint": "Use gretil_fetch with the file_id to get full content" });
+            // Lightweight next-call hints (low token) for GRETIL
+            let hint_top = std::env::var("DAIZO_HINT_TOP").ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or(1);
+            let mut fetch_suggestions: Vec<serde_json::Value> = Vec::new();
+            for r in results.iter().take(hint_top) {
+                if let Some(m) = r.matches.first() { if let Some(ln) = m.line_number {
+                    fetch_suggestions.push(json!({
+                        "tool": "gretil_fetch",
+                        "args": {"id": r.file_id, "lineNumber": ln, "contextBefore": 1, "contextAfter": 3},
+                        "mode": "low-cost"
+                    }));
+                }}
+            }
+            let mut meta = json!({
+                "searchPattern": q,
+                "totalFiles": results.len(),
+                "results": results,
+                "hint": "Use gretil_fetch (id + lineNumber) for low-cost context; gretil_pipeline with autoFetch=false to summarize",
+                "fetchSuggestions": fetch_suggestions
+            });
+            meta["pipelineHint"] = json!({
+                "tool": "gretil_pipeline",
+                "args": {"query": q, "autoFetch": false, "maxResults": 5, "maxMatchesPerFile": 1, "includeMatchLine": true }
+            });
             return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary}], "_meta": meta }});
         }
         "gretil_pipeline" => {
@@ -1374,12 +1413,24 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                 }
                 summary.push('\n');
             }
-            
+            // Lightweight next-call hints for Tipitaka (no pipeline tool)
+            let hint_top = std::env::var("DAIZO_HINT_TOP").ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or(1);
+            let mut fetch_suggestions: Vec<serde_json::Value> = Vec::new();
+            for r in results.iter().take(hint_top) {
+                if let Some(m) = r.matches.first() { if let Some(ln) = m.line_number {
+                    fetch_suggestions.push(json!({
+                        "tool": "tipitaka_fetch",
+                        "args": {"id": r.file_id, "lineNumber": ln, "contextBefore": 1, "contextAfter": 3},
+                        "mode": "low-cost"
+                    }));
+                }}
+            }
             let meta = json!({
                 "searchPattern": q,
                 "totalFiles": results.len(),
                 "results": results,
-                "hint": "Use tipitaka_fetch with the file_id to get full content"
+                "hint": "Use tipitaka_fetch (id + lineNumber) for low-cost context",
+                "fetchSuggestions": fetch_suggestions
             });
             
             return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary}], "_meta": meta }});
