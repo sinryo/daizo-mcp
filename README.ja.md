@@ -96,6 +96,14 @@ daizo-cli update --yes              # CLI の再インストール
 - `gretil_fetch`（`lineNumber`, `contextBefore`, `contextAfter` をサポート）
 - `sat_fetch`, `sat_pipeline`
 
+## 低トークン運用（AI クライアント向け）
+
+- 既定の導線: `*_search` → `_meta.fetchSuggestions` を読む → `*_fetch` を `{ id, lineNumber, contextBefore:1, contextAfter:3 }` で呼ぶ。
+- `*_pipeline` は多ファイル要約が必要な時のみ使用。既定で `autoFetch=false` を推奨。search は `_meta.pipelineHint` も返します。
+- 各ツールの description にも案内を記載。`initialize` 応答の `prompts.low-token-guide` でも方針を提示します。
+
+Tips: `DAIZO_HINT_TOP` でサジェスト件数を制御（既定 1）。
+
 ## データソース
 
 - CBETA: https://github.com/cbeta-org/xml-p5
@@ -113,6 +121,14 @@ daizo-cli update --yes              # CLI の再インストール
 - ハイライト関連: `DAIZO_HL_PREFIX`, `DAIZO_HL_SUFFIX`, `DAIZO_SNIPPET_PREFIX`, `DAIZO_SNIPPET_SUFFIX`
 - 取得ポリシー（レート/robots 配慮）:
   - `DAIZO_REPO_MIN_DELAY_MS`, `DAIZO_REPO_USER_AGENT`, `DAIZO_REPO_RESPECT_ROBOTS`
+
+## リリース補助
+
+- スクリプト: `scripts/release.sh`
+- 例:
+  - 自動一括（バンプ → コミット → タグ → プッシュ → GitHub リリース自動ノート）: `scripts/release.sh 0.3.3 --all`
+  - CHANGELOG をノートに使用: `scripts/release.sh 0.3.3 --push --release`
+  - ドライラン: `scripts/release.sh 0.3.3 --all --dry-run`
 
 ## ライセンス
 

@@ -96,6 +96,14 @@ Fetch:
 - `gretil_fetch` (supports `lineNumber`, `contextBefore`, `contextAfter`)
 - `sat_fetch`, `sat_pipeline`
 
+## Low-Token Guide (AI clients)
+
+- Default flow: `*_search` → read `_meta.fetchSuggestions` → call `*_fetch` with `{ id, lineNumber, contextBefore:1, contextAfter:3 }`.
+- Use `*_pipeline` only when you need a multi-file summary; set `autoFetch=false` by default. Search tools also provide `_meta.pipelineHint`.
+- Tool descriptions mention these hints; `initialize` also exposes a `prompts.low-token-guide` entry for clients.
+
+Tip: Control number of suggestions via `DAIZO_HINT_TOP` (default 1).
+
 ## Data Sources
 
 - CBETA: https://github.com/cbeta-org/xml-p5
@@ -113,6 +121,14 @@ Fetch:
 - Highlight envs: `DAIZO_HL_PREFIX`, `DAIZO_HL_SUFFIX`, `DAIZO_SNIPPET_PREFIX`, `DAIZO_SNIPPET_SUFFIX`
 - Repo policy envs (for robots/rate-limits):
   - `DAIZO_REPO_MIN_DELAY_MS`, `DAIZO_REPO_USER_AGENT`, `DAIZO_REPO_RESPECT_ROBOTS`
+
+## Release Helper
+
+- Script: `scripts/release.sh`
+- Examples:
+  - Auto (bump → commit → tag → push → GitHub release with auto-notes): `scripts/release.sh 0.3.3 --all`
+  - CHANGELOG notes instead of auto-notes: `scripts/release.sh 0.3.3 --push --release`
+  - Dry run: `scripts/release.sh 0.3.3 --all --dry-run`
 
 ## License
 

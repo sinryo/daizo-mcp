@@ -96,6 +96,14 @@ daizo-cli update --yes              # 重新安裝 CLI
 - `gretil_fetch`（支援 `lineNumber`, `contextBefore`, `contextAfter`）
 - `sat_fetch`, `sat_pipeline`
 
+## 低代幣用法（AI 用戶端）
+
+- 預設流程：`*_search` → 讀取 `_meta.fetchSuggestions` → 以 `{ id, lineNumber, contextBefore:1, contextAfter:3 }` 呼叫 `*_fetch`。
+- 僅在需要多檔案摘要時使用 `*_pipeline`，且預設 `autoFetch=false`。搜尋工具也提供 `_meta.pipelineHint`。
+- 工具描述中已標示此指引；`initialize` 亦提供 `prompts.low-token-guide` 以提示用法。
+
+提示：以 `DAIZO_HINT_TOP` 控制建議數量（預設 1）。
+
 ## 資料來源
 
 - CBETA: https://github.com/cbeta-org/xml-p5
@@ -113,6 +121,14 @@ daizo-cli update --yes              # 重新安裝 CLI
 - 高亮設定：`DAIZO_HL_PREFIX`, `DAIZO_HL_SUFFIX`, `DAIZO_SNIPPET_PREFIX`, `DAIZO_SNIPPET_SUFFIX`
 - 取得策略（頻率/robots）：
   - `DAIZO_REPO_MIN_DELAY_MS`, `DAIZO_REPO_USER_AGENT`, `DAIZO_REPO_RESPECT_ROBOTS`
+
+## 版本釋出輔助
+
+- 腳本：`scripts/release.sh`
+- 範例：
+  - 全自動（bump → commit → tag → push → GitHub 釋出，自動筆記）: `scripts/release.sh 0.3.3 --all`
+  - 使用 CHANGELOG 筆記：`scripts/release.sh 0.3.3 --push --release`
+  - 模擬執行：`scripts/release.sh 0.3.3 --all --dry-run`
 
 ## 授權
 

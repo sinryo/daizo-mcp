@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.3] - 2025-09-15
+
+### Added
+- MCP prompts: `low-token-guide` to nudge AI toward search→fetch (lineNumber) flow.
+- Tool: `daizo_usage` to present low-token usage guidance via tools list.
+- Release helper: `scripts/release.sh` now supports `--auto-notes` for GitHub auto-generated notes and includes section header in extracted notes.
+
+### Changed
+- Tool descriptions emphasize `_meta.fetchSuggestions`/`pipelineHint` and avoiding pipeline by default.
+
+### Notes
+- Version bumped: `daizo-cli` 0.3.3, `daizo-mcp` 0.3.3.
+
 ## [0.3.2] - 2025-09-15
 
 ### Added
