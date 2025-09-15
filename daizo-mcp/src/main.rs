@@ -177,14 +177,14 @@ fn handle_initialize(id: serde_json::Value) -> serde_json::Value {
                 "prompts": {},
                 "logging": {}
             },
-            "serverInfo": { "name": "daizo-mcp", "version": "0.3.1" }
+            "serverInfo": { "name": "daizo-mcp", "version": "0.3.2" }
         }
     })
 }
 
 fn tools_list() -> Vec<serde_json::Value> {
     vec![
-        tool("cbeta_fetch", "Retrieve CBETA text by ID with options for specific parts/sections and line-based context retrieval", json!({"type":"object","properties":{
+        tool("cbeta_fetch", "Retrieve CBETA text by ID/part; supports low-cost slices via id+lineNumber (follow cbeta_search _meta.fetchSuggestions)", json!({"type":"object","properties":{
             "id":{"type":"string"},
             "query":{"type":"string"},
             "part":{"type":"string"},
@@ -202,13 +202,13 @@ fn tools_list() -> Vec<serde_json::Value> {
             "contextAfter":{"type":"number","description":"Number of lines after target line (default: 100)"},
             "contextLines":{"type":"number","description":"Number of lines before/after target line (deprecated, use contextBefore/contextAfter)"}
         }})),
-        tool("cbeta_search", "Fast regex content search across CBETA texts (returns line numbers)", json!({"type":"object","properties":{
+        tool("cbeta_search", "Fast regex search over CBETA; returns _meta.fetchSuggestions (use cbeta_fetch with id+lineNumber) and _meta.pipelineHint for low-cost next steps", json!({"type":"object","properties":{
             "query":{"type":"string","description":"Regular expression pattern to search for"},
             "maxResults":{"type":"number","description":"Maximum number of files to return (default: 20)"},
             "maxMatchesPerFile":{"type":"number","description":"Maximum matches per file (default: 5)"}
         },"required":["query"]})),
         tool("cbeta_title_search", "Title-based search in CBETA corpus", json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"}},"required":["query"]})),
-        tool("cbeta_pipeline", "Search CBETA content, return results with fetch suggestions, and optionally auto-fetch context or full text for top hits", json!({"type":"object","properties":{
+        tool("cbeta_pipeline", "CBETA summarize/context pipeline; set autoFetch=false for summary-only (see cbeta_search _meta.pipelineHint)", json!({"type":"object","properties":{
             "query":{"type":"string"},
             "maxResults":{"type":"number"},
             "maxMatchesPerFile":{"type":"number"},
@@ -253,7 +253,7 @@ fn tools_list() -> Vec<serde_json::Value> {
             "fq":{"type":"array","items":{"type":"string"}},
             "autoFetch":{"type":"boolean"}
         },"required":["query"]})),
-        tool("tipitaka_fetch", "Retrieve Tipitaka text by ID with section support and line-based context retrieval", json!({"type":"object","properties":{
+        tool("tipitaka_fetch", "Retrieve Tipitaka by ID/section; supports low-cost slices via id+lineNumber (follow tipitaka_search _meta.fetchSuggestions)", json!({"type":"object","properties":{
             "id":{"type":"string"},
             "query":{"type":"string"},
             "headIndex":{"type":"number"},
@@ -273,7 +273,7 @@ fn tools_list() -> Vec<serde_json::Value> {
             "contextAfter":{"type":"number","description":"Number of lines after target line (default: 100)"},
             "contextLines":{"type":"number","description":"Number of lines before/after target line (deprecated, use contextBefore/contextAfter)"}
         }})),
-        tool("tipitaka_search", "Fast regex content search across Tipitaka texts (returns line numbers)", json!({"type":"object","properties":{
+        tool("tipitaka_search", "Fast regex search over Tipitaka; returns _meta.fetchSuggestions (use tipitaka_fetch with id+lineNumber) for low-cost next steps", json!({"type":"object","properties":{
             "query":{"type":"string","description":"Regular expression pattern to search for"},
             "maxResults":{"type":"number","description":"Maximum number of files to return (default: 20)"},
             "maxMatchesPerFile":{"type":"number","description":"Maximum matches per file (default: 5)"}
@@ -281,12 +281,12 @@ fn tools_list() -> Vec<serde_json::Value> {
         tool("tipitaka_title_search", "Title-based search in Tipitaka corpus", json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"}},"required":["query"]})),
         // GRETIL (Sanskrit TEI)
         tool("gretil_title_search", "Title-based search in GRETIL corpus", json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"}},"required":["query"]})),
-        tool("gretil_search", "Fast regex content search across GRETIL TEI (returns line numbers)", json!({"type":"object","properties":{
+        tool("gretil_search", "Fast regex search over GRETIL; returns _meta.fetchSuggestions (use gretil_fetch with id+lineNumber) and _meta.pipelineHint for low-cost next steps", json!({"type":"object","properties":{
             "query":{"type":"string","description":"Regular expression pattern to search for"},
             "maxResults":{"type":"number","description":"Maximum number of files to return (default: 20)"},
             "maxMatchesPerFile":{"type":"number","description":"Maximum matches per file (default: 5)"}
         },"required":["query"]})),
-        tool("gretil_fetch", "Retrieve GRETIL text by ID with line-based context retrieval", json!({"type":"object","properties":{
+        tool("gretil_fetch", "Retrieve GRETIL by ID; supports low-cost slices via id+lineNumber (follow gretil_search _meta.fetchSuggestions)", json!({"type":"object","properties":{
             "id":{"type":"string"},
             "query":{"type":"string"},
             "includeNotes":{"type":"boolean"},
@@ -303,7 +303,7 @@ fn tools_list() -> Vec<serde_json::Value> {
             "contextAfter":{"type":"number","description":"Number of lines after target line (default: 100)"},
             "contextLines":{"type":"number","description":"Number of lines before/after target line (deprecated, use contextBefore/contextAfter)"}
         }})),
-        tool("gretil_pipeline", "Search GRETIL content, return results with optional auto-fetch of contexts or full text", json!({"type":"object","properties":{
+        tool("gretil_pipeline", "GRETIL summarize/context pipeline; set autoFetch=false for summary-only (see gretil_search _meta.pipelineHint)", json!({"type":"object","properties":{
             "query":{"type":"string"},
             "maxResults":{"type":"number"},
             "maxMatchesPerFile":{"type":"number"},

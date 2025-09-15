@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.2] - 2025-09-15
+
+### Added
+- MCP search hinting for token economy:
+  - `cbeta_search`, `tipitaka_search`, `gretil_search` now return `_meta.fetchSuggestions` with low-cost next steps (suggested `*_fetch` using `id + lineNumber` and `contextBefore:1/contextAfter:3`).
+  - `cbeta_search` and `gretil_search` also return `_meta.pipelineHint` for a summary-first path (use `*_pipeline` with `autoFetch=false`, minimal matches).
+- Tool descriptions updated to instruct AI clients to read `_meta.fetchSuggestions` / `pipelineHint` and prefer low-cost follow-ups.
+- Env knob: `DAIZO_HINT_TOP` controls how many suggestions to emit (default 1).
+
+### Changed
+- MCP tool descriptions clarify low-token workflows and when to disable auto-fetch.
+
+### Notes
+- Version bumped: `daizo-cli` 0.3.2, `daizo-mcp` 0.3.2.
+
 ## [0.3.1] - 2025-09-15
 
 ### Added
@@ -28,4 +43,3 @@ All notable changes to this project will be documented in this file.
 - Version bumped: `daizo-cli` 0.3.1, `daizo-mcp` 0.3.1.
 - Environment knobs for AI clients:
   - `DAIZO_MCP_MAX_CHARS`, `DAIZO_MCP_SNIPPET_LEN`, `DAIZO_MCP_AUTO_FILES`, `DAIZO_MCP_AUTO_MATCHES`.
-
