@@ -133,6 +133,15 @@ fn write_message(stdout: &mut impl Write, v: &serde_json::Value) -> Result<()> {
     Ok(())
 }
 
+fn env_usize(key: &str, default_v: usize) -> usize {
+    std::env::var(key).ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or(default_v)
+}
+
+fn default_max_chars() -> usize { env_usize("DAIZO_MCP_MAX_CHARS", 6000) }
+fn default_snippet_len() -> usize { env_usize("DAIZO_MCP_SNIPPET_LEN", 120) }
+fn default_auto_files() -> usize { env_usize("DAIZO_MCP_AUTO_FILES", 1) }
+fn default_auto_matches() -> usize { env_usize("DAIZO_MCP_AUTO_MATCHES", 1) }
+
 #[derive(Deserialize)]
 struct Request {
     id: serde_json::Value,
@@ -168,7 +177,7 @@ fn handle_initialize(id: serde_json::Value) -> serde_json::Value {
                 "prompts": {},
                 "logging": {}
             },
-            "serverInfo": { "name": "daizo-mcp", "version": "0.3.0" }
+            "serverInfo": { "name": "daizo-mcp", "version": "0.3.1" }
         }
     })
 }
@@ -602,11 +611,14 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
             }
             let heads = list_heads_cbeta(&xml);
             let hl = args.get("headingsLimit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+            // enforce output cap
+            let cap = default_max_chars();
+            if sliced.chars().count() > cap { sliced = sliced.chars().take(cap).collect(); }
             let meta = json!({
                 "totalLength": text.len(),
                 "returnedStart": args.get("startChar").and_then(|v| v.as_u64()).unwrap_or( args.get("page").and_then(|v| v.as_u64()).and_then(|p| args.get("pageSize").and_then(|s| s.as_u64()).map(|ps| p*ps)).unwrap_or(0) ) ,
                 "returnedEnd": args.get("startChar").and_then(|v| v.as_u64()).unwrap_or( args.get("page").and_then(|v| v.as_u64()).and_then(|p| args.get("pageSize").and_then(|s| s.as_u64()).map(|ps| p*ps)).unwrap_or(0) ) + (sliced.len() as u64),
-                "truncated": if full_flag { false } else { (sliced.len() as u64) < (text.len() as u64) },
+                "truncated": if full_flag { (sliced.len() as u64) < (text.len() as u64) } else { (sliced.len() as u64) < (text.len() as u64) },
                 "sourcePath": path.to_string_lossy(),
                 "extractionMethod": extraction_method,
                 "partMatched": part_matched,
@@ -738,6 +750,9 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                 }
             }
             let mut sliced = slice_text(&text, &args);
+            // enforce output cap
+            let cap = default_max_chars();
+            if sliced.chars().count() > cap { sliced = sliced.chars().take(cap).collect(); }
             // Optional highlight for Tipitaka
             let hl_in = args.get("highlight").and_then(|v| v.as_str());
             let mut hl_regex = args.get("highlightRegex").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -978,11 +993,11 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
             let context_before = args.get("contextBefore").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
             let context_after = args.get("contextAfter").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
             let auto_fetch = args.get("autoFetch").and_then(|v| v.as_bool()).unwrap_or(false);
-            let auto_fetch_files = args.get("autoFetchFiles").and_then(|v| v.as_u64()).map(|x| x as usize).unwrap_or_else(|| if auto_fetch { 1 } else { 0 });
+            let auto_fetch_files = args.get("autoFetchFiles").and_then(|v| v.as_u64()).map(|x| x as usize).unwrap_or_else(|| if auto_fetch { default_auto_files() } else { 0 });
             let auto_fetch_matches = args.get("autoFetchMatches").and_then(|v| v.as_u64()).map(|x| x as usize);
             let include_match_line = args.get("includeMatchLine").and_then(|v| v.as_bool()).unwrap_or(true);
             let include_highlight_snippet = args.get("includeHighlightSnippet").and_then(|v| v.as_bool()).unwrap_or(true);
-            let min_snippet_len = args.get("minSnippetLen").and_then(|v| v.as_u64()).map(|x| x as usize).unwrap_or(0);
+            let min_snippet_len = args.get("minSnippetLen").and_then(|v| v.as_u64()).map(|x| x as usize).unwrap_or(default_snippet_len());
             // highlight/snippet markers with env fallbacks
             let hl_in = args.get("highlight").and_then(|v| v.as_str());
             let mut hl_regex = args.get("highlightRegex").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -1043,7 +1058,8 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                     let xml = fs::read_to_string(&r.file_path).unwrap_or_default();
                     if full {
                         let text = if include_notes { extract_text_opts(&xml, true) } else { extract_text(&xml) };
-                        let sliced = slice_text(&text, &json!({"startChar": 0, "endChar": text.chars().count()}));
+                        let cap = default_max_chars();
+                        let sliced: String = text.chars().take(cap).collect();
                         content_items.push(json!({"type":"text","text": sliced}));
                         fetched.push(json!({"id": r.file_id, "full": true, "returnedChars": sliced.chars().count()}));
                     } else {
@@ -1051,7 +1067,8 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                         let mut count = 0usize;
                         let mut highlight_counts: Vec<usize> = Vec::new();
                         let mut file_highlights: Vec<Vec<serde_json::Value>> = Vec::new();
-                        let per_file_limit = auto_fetch_matches.unwrap_or(max_matches_per_file);
+                        let mut per_file_limit = auto_fetch_matches.unwrap_or(max_matches_per_file);
+                        if include_highlight_snippet { per_file_limit = per_file_limit.min(default_auto_matches()); }
                         for m in r.matches.iter().take(per_file_limit) {
                             if let Some(ln) = m.line_number {
                                 let mut ctx = daizo_core::extract_xml_around_line_asymmetric(&xml, ln, context_before, context_after);
@@ -1063,8 +1080,9 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                                 }
                                 if !ctx.trim().is_empty() {
                         if !combined.is_empty() { combined.push_str("\n\n---\n\n"); }
+                        // Prefer compact snippet; avoid dumping full context unless explicitly requested
                         if include_highlight_snippet && !m.highlight.trim().is_empty() && m.highlight.trim().chars().count() >= min_snippet_len {
-                            combined.push_str(&format!("{}{}{}\n\n", snip_pre, m.highlight.trim(), snip_suf));
+                            combined.push_str(&format!("{}{}{}", snip_pre, m.highlight.trim(), snip_suf));
                         }
                         // optional in-context highlighting and positions per context
                         let mut chigh: Vec<serde_json::Value> = Vec::new();
@@ -1092,7 +1110,9 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                                 out.push_str(&ctx[j..]); ctx = out;
                             }
                         }
-                        combined.push_str(&format!("# {} (line {})\n\n{}", r.file_id, ln, ctx));
+                        if !include_highlight_snippet {
+                            combined.push_str(&format!("# {} (line {})\n\n{}", r.file_id, ln, ctx));
+                        }
                         highlight_counts.push(chigh.len());
                         file_highlights.push(chigh);
                                     count += 1;
@@ -1198,6 +1218,9 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                     out.push_str(&sliced[j..]); sliced = out;
                 }
             }
+            // cap output
+            let cap = default_max_chars();
+            if sliced.chars().count() > cap { sliced = sliced.chars().take(cap).collect(); }
             let heads = list_heads_generic(&xml);
             let hl = args.get("headingsLimit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
             let meta = json!({
