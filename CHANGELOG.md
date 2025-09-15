@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.6] - 2025-09-15
+
+### Fixed
+- Release helper no longer fails before tagging when using `--auto-notes` or when not creating a release; CHANGELOG extraction is skipped in that case.
+- GitHub release now marked as Latest automatically.
+
+### Changed
+- Version bumped: `daizo-cli` 0.3.6, `daizo-mcp` 0.3.6.
+
 ## [0.3.5] - 2025-09-15
 
 ### Notes

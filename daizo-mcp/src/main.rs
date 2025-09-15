@@ -185,7 +185,7 @@ fn handle_initialize(id: serde_json::Value) -> serde_json::Value {
                 },
                 "logging": {}
             },
-            .3.5" }
+            .3.6" }
         }
     })
 }
@@ -201,8 +201,8 @@ fn tools_list() -> Vec<serde_json::Value> {
             "full":{"type":"boolean","description":"Return full text without slicing"},
             "highlight":{"type":"string","description":"Highlight string or regex pattern (used with lineNumber-based context)"},
             "highlightRegex":{"type":"boolean","description":"Interpret highlight as regex (default false)"},
-            "highlightPrefix":{"type":"string","description":"Prefix marker for highlights (default '>>> ')"},
-            "highlightSuffix":{"type":"string","description":"Suffix marker for highlights (default ' <<<')"},
+            "highlightPrefix":{"type":"string","description":"Prefix marker for highlights (default \">>> \")"},
+            "highlightSuffix":{"type":"string","description":"Suffix marker for highlights (default \" <<<\")"},
             "headingsLimit":{"type":"number"},
             "startChar":{"type":"number"},"endChar":{"type":"number"},"maxChars":{"type":"number"},
             "page":{"type":"number"},"pageSize":{"type":"number"},
@@ -227,17 +227,17 @@ fn tools_list() -> Vec<serde_json::Value> {
             "autoFetchFiles":{"type":"number","description":"Auto-fetch top N files (default 1 when autoFetch=true)"},
             "includeMatchLine":{"type":"boolean","description":"Include the matched line in auto-fetched context (default true)"},
             "includeHighlightSnippet":{"type":"boolean","description":"Include a short highlight snippet before each context (default true)"},
-            "snippetPrefix":{"type":"string","description":"Prefix for highlight snippets in pipeline (default '>>> ')"},
+            "snippetPrefix":{"type":"string","description":"Prefix for highlight snippets in pipeline (default \">>> \")"},
             "snippetSuffix":{"type":"string","description":"Suffix for highlight snippets in pipeline (default '')"},
             "highlight":{"type":"string","description":"Highlight string or regex pattern inside contexts"},
             "highlightRegex":{"type":"boolean","description":"Interpret highlight as regex (default false)"},
-            "highlightPrefix":{"type":"string","description":"Prefix marker for highlights (default from env or '>>> ')"},
-            "highlightSuffix":{"type":"string","description":"Suffix marker for highlights (default from env or ' <<<')"},
+            "highlightPrefix":{"type":"string","description":"Prefix marker for highlights (default from env or \">>> \")"},
+            "highlightSuffix":{"type":"string","description":"Suffix marker for highlights (default from env or \" <<<\")"},
             "full":{"type":"boolean"},
             "includeNotes":{"type":"boolean"}
         },"required":["query"]})),
         tool("sat_detail", "Fetch SAT detail by useid", json!({"type":"object","properties":{"useid":{"type":"string"},"key":{"type":"string"},"startChar":{"type":"number"},"maxChars":{"type":"number"}},"required":["useid"]})),
-        tool("sat_fetch", "Fetch SAT page (prefer useid → detail URL)", json!({"type":"object","properties":{
+        tool("sat_fetch", "Fetch SAT page (prefer useid to detail URL)", json!({"type":"object","properties":{
             "url":{"type":"string"},
             "useid":{"type":"string"},
             "startChar":{"type":"number"},
@@ -485,7 +485,7 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
     let content_text = match name {
         "daizo_usage" => {
-            let guide = "Low-token guide:\n\n- Use search → read _meta.fetchSuggestions\n- Then call *_fetch with {id, lineNumber, contextBefore:1, contextAfter:3}\n- Use *_pipeline only for multi-file summary; set autoFetch=false by default\n- Search tools may also provide _meta.pipelineHint\n- Control number of suggestions via DAIZO_HINT_TOP (default 1)";
+            let guide = "Low-token guide:\n\n- Use search -> read _meta.fetchSuggestions\n- Then call *_fetch with {id, lineNumber, contextBefore:1, contextAfter:3}\n- Use *_pipeline only for multi-file summary; set autoFetch=false by default\n- Search tools may also provide _meta.pipelineHint\n- Control number of suggestions via DAIZO_HINT_TOP (default 1)";
             return json!({
                 "jsonrpc":"2.0",
                 "id": id,
@@ -1026,7 +1026,8 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
             let max_matches_per_file = args.get("maxMatchesPerFile").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
             let context_before = args.get("contextBefore").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
             let context_after = args.get("contextAfter").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
-            let auto_fetch = args.get("autoFetch").and_then(|v| v.as_bool()).unwrap_or(false);
+            let mut auto_fetch = args.get("autoFetch").and_then(|v| v.as_bool()).unwrap_or(false);
+            let force_no_auto = std::env::var("DAIZO_FORCE_NO_AUTO").ok().as_deref() == Some("1");
             let auto_fetch_files = args.get("autoFetchFiles").and_then(|v| v.as_u64()).map(|x| x as usize).unwrap_or_else(|| if auto_fetch { default_auto_files() } else { 0 });
             let auto_fetch_matches = args.get("autoFetchMatches").and_then(|v| v.as_u64()).map(|x| x as usize);
             let include_match_line = args.get("includeMatchLine").and_then(|v| v.as_bool()).unwrap_or(true);
@@ -1084,6 +1085,7 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                 "results": results,
                 "fetchSuggestions": suggestions
             });
+            if force_no_auto && auto_fetch { auto_fetch = false; meta["autoFetchOverridden"] = json!(true); }
 
             if auto_fetch && auto_fetch_files > 0 {
                 let take_files = std::cmp::min(auto_fetch_files, results.len());
@@ -1328,7 +1330,10 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
             let mut meta = json!({ "searchPattern": q, "totalFiles": results.len(), "results": results });
             let summary = format!("Found {} files with matches for '{}'", results.len(), q);
             content_items.push(json!({"type":"text","text": summary}));
-            if args.get("autoFetch").and_then(|v| v.as_bool()).unwrap_or(false) {
+            let force_no_auto = std::env::var("DAIZO_FORCE_NO_AUTO").ok().as_deref() == Some("1");
+            let mut auto_fetch = args.get("autoFetch").and_then(|v| v.as_bool()).unwrap_or(false);
+            if force_no_auto && auto_fetch { auto_fetch = false; meta["autoFetchOverridden"] = json!(true); }
+            if auto_fetch {
                 let full = args.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
                 let include_notes = args.get("includeNotes").and_then(|v| v.as_bool()).unwrap_or(false);
                 let tf = args.get("autoFetchFiles").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
