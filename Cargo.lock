@@ -284,7 +284,7 @@ dependencies = [
 
 [[package]]
 name = "daizo-cli"
-version = "0.3.6"
+version = "0.3.8"
 dependencies = [
  "anyhow",
  "clap",
@@ -321,7 +321,7 @@ dependencies = [
 
 [[package]]
 name = "daizo-mcp"
-version = "0.3.6"
+version = "0.3.8"
 dependencies = [
  "anyhow",
  "daizo-core",

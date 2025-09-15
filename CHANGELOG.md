@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.8] - 2025-09-15
+
+### Changed
+- Version bumped: `daizo-cli` 0.3.8, `daizo-mcp` 0.3.8.
+- Release helper: auto-notes/Latest handling retained; CHANGELOG extraction only when needed.
+
 ## [0.3.6] - 2025-09-15
 
 ### Fixed
