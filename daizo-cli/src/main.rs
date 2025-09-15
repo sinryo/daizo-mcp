@@ -3,11 +3,13 @@ use daizo_core::{
     build_index,
     build_tipitaka_index,
     build_cbeta_index,
+    build_gretil_index,
     extract_text,
 };
 use serde::Serialize;
 use daizo_core::text_utils::{compute_match_score, normalized};
-use daizo_core::path_resolver::{cbeta_root, tipitaka_root, cache_dir, find_exact_file_by_name, resolve_cbeta_path_by_id, resolve_tipitaka_by_id, find_tipitaka_content_for_base};
+use daizo_core::text_utils::compute_match_score_sanskrit;
+use daizo_core::path_resolver::{cbeta_root, tipitaka_root, gretil_root, cache_dir, find_exact_file_by_name, resolve_cbeta_path_by_id, resolve_tipitaka_by_id, resolve_gretil_by_id, find_tipitaka_content_for_base};
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -30,6 +32,156 @@ enum Commands {
         /// Override HOME/.daizo base
         #[arg(long)]
         base: Option<PathBuf>,
+    },
+    /// Search GRETIL and optionally auto-fetch contexts or full text (pipeline)
+    GretilPipeline {
+        /// Query string (regex)
+        #[arg(long)]
+        query: String,
+        /// Maximum files to return
+        #[arg(long, default_value_t = 10)]
+        max_results: usize,
+        /// Maximum matches per file (search)
+        #[arg(long, default_value_t = 3)]
+        max_matches_per_file: usize,
+        /// Context lines before
+        #[arg(long, default_value_t = 10)]
+        context_before: usize,
+        /// Context lines after
+        #[arg(long, default_value_t = 100)]
+        context_after: usize,
+        /// Auto-fetch top files
+        #[arg(long, default_value_t = false)]
+        autofetch: bool,
+        /// Number of files to auto-fetch (default 1 when autofetch)
+        #[arg(long)]
+        auto_fetch_files: Option<usize>,
+        /// Per-file context count (override)
+        #[arg(long)]
+        auto_fetch_matches: Option<usize>,
+        /// Include matched line in context
+        #[arg(long, default_value_t = true)]
+        include_match_line: bool,
+        /// Include short highlight snippet
+        #[arg(long, default_value_t = true)]
+        include_highlight_snippet: bool,
+        /// Minimum snippet length to include
+        #[arg(long, default_value_t = 0)]
+        min_snippet_len: usize,
+        /// Highlight pattern for contexts
+        #[arg(long)]
+        highlight: Option<String>,
+        /// Interpret highlight as regex
+        #[arg(long, default_value_t = false)]
+        highlight_regex: bool,
+        /// Highlight prefix (fallback: $DAIZO_HL_PREFIX or ">>> ")
+        #[arg(long)]
+        highlight_prefix: Option<String>,
+        /// Highlight suffix (fallback: $DAIZO_HL_SUFFIX or " <<<")
+        #[arg(long)]
+        highlight_suffix: Option<String>,
+        /// Snippet prefix (fallback: $DAIZO_SNIPPET_PREFIX or ">>> ")
+        #[arg(long)]
+        snippet_prefix: Option<String>,
+        /// Snippet suffix (fallback: $DAIZO_SNIPPET_SUFFIX or "")
+        #[arg(long)]
+        snippet_suffix: Option<String>,
+        /// Fetch full text instead of contexts
+        #[arg(long, default_value_t = false)]
+        full: bool,
+        /// Include <note> in full text
+        #[arg(long, default_value_t = false)]
+        include_notes: bool,
+        /// Output JSON envelope
+        #[arg(long, default_value_t = true)]
+        json: bool,
+    },
+    /// Search GRETIL titles (index-based)
+    GretilTitleSearch {
+        /// Query string
+        #[arg(long)]
+        query: String,
+        /// Max results
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        /// Output JSON
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Fetch GRETIL text by id or query
+    GretilFetch {
+        /// File stem id (e.g., Bhagavadgita)
+        #[arg(long)]
+        id: Option<String>,
+        /// Alternative: search query to pick best match
+        #[arg(long)]
+        query: Option<String>,
+        /// Include <note> text
+        #[arg(long, default_value_t = false)]
+        include_notes: bool,
+        /// Return full text (no slicing)
+        #[arg(long, default_value_t = false)]
+        full: bool,
+        /// Highlight string or regex (with --line-number)
+        #[arg(long)]
+        highlight: Option<String>,
+        /// Interpret highlight as regex
+        #[arg(long, default_value_t = false)]
+        highlight_regex: bool,
+        /// Highlight prefix (with --highlight)
+        #[arg(long)]
+        highlight_prefix: Option<String>,
+        /// Highlight suffix (with --highlight)
+        #[arg(long)]
+        highlight_suffix: Option<String>,
+        /// Headings preview count
+        #[arg(long, default_value_t = 10)]
+        headings_limit: usize,
+        /// Pagination: start char
+        #[arg(long)]
+        start_char: Option<usize>,
+        /// Pagination: end char
+        #[arg(long)]
+        end_char: Option<usize>,
+        /// Pagination: max chars
+        #[arg(long)]
+        max_chars: Option<usize>,
+        /// Pagination: page index
+        #[arg(long)]
+        page: Option<usize>,
+        /// Pagination: page size
+        #[arg(long)]
+        page_size: Option<usize>,
+        /// Target line number for context extraction
+        #[arg(long)]
+        line_number: Option<usize>,
+        /// Number of lines before target line (default: 10)
+        #[arg(long, default_value_t = 10)]
+        context_before: usize,
+        /// Number of lines after target line (default: 100)
+        #[arg(long, default_value_t = 100)]
+        context_after: usize,
+        /// Number of lines before/after target line (deprecated, use context_before/context_after)
+        #[arg(long)]
+        context_lines: Option<usize>,
+        /// Output JSON
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Search GRETIL corpus (content-based)
+    GretilSearch {
+        /// Query string (regular expression)
+        #[arg(long)]
+        query: String,
+        /// Maximum number of files to return
+        #[arg(long, default_value_t = 20)]
+        max_results: usize,
+        /// Maximum matches per file
+        #[arg(long, default_value_t = 5)]
+        max_matches_per_file: usize,
+        /// Output JSON
+        #[arg(long, default_value_t = false)]
+        json: bool,
     },
     /// Print CLI version
     Version {},
@@ -546,6 +698,20 @@ fn main() -> anyhow::Result<()> {
             let tmp = Commands::CbetaPipeline { query, max_results, max_matches_per_file, context_before, context_after, autofetch, auto_fetch_files, auto_fetch_matches, include_match_line, include_highlight_snippet, min_snippet_len, highlight, highlight_regex, highlight_prefix, highlight_suffix, snippet_prefix, snippet_suffix, full, include_notes, json };
             cmd_cbeta::cbeta_pipeline(&tmp)?;
         }
+        Commands::GretilTitleSearch { query, limit, json } => {
+            cmd_gretil::gretil_title_search(&query, limit, json)?;
+        }
+        Commands::GretilFetch { id, query, include_notes, full, highlight, highlight_regex, highlight_prefix, highlight_suffix, headings_limit, start_char, end_char, max_chars, page, page_size, line_number, context_before, context_after, context_lines, json } => {
+            let tmp = Commands::GretilFetch { id, query, include_notes, full, highlight, highlight_regex, highlight_prefix, highlight_suffix, headings_limit, start_char, end_char, max_chars, page, page_size, line_number, context_before, context_after, context_lines, json };
+            cmd_gretil::gretil_fetch(&tmp)?;
+        }
+        Commands::GretilPipeline { query, max_results, max_matches_per_file, context_before, context_after, autofetch, auto_fetch_files, auto_fetch_matches, include_match_line, include_highlight_snippet, min_snippet_len, highlight, highlight_regex, highlight_prefix, highlight_suffix, snippet_prefix, snippet_suffix, full, include_notes, json } => {
+            let tmp = Commands::GretilPipeline { query, max_results, max_matches_per_file, context_before, context_after, autofetch, auto_fetch_files, auto_fetch_matches, include_match_line, include_highlight_snippet, min_snippet_len, highlight, highlight_regex, highlight_prefix, highlight_suffix, snippet_prefix, snippet_suffix, full, include_notes, json };
+            cmd_gretil::gretil_pipeline(&tmp)?;
+        }
+        Commands::GretilSearch { query, max_results, max_matches_per_file, json } => {
+            cmd_gretil::gretil_search(&query, max_results, max_matches_per_file, json)?;
+        }
             
             
             
@@ -814,6 +980,20 @@ pub(crate) fn load_or_build_cbeta_index_cli() -> Vec<daizo_core::IndexEntry> {
     entries
 }
 
+pub(crate) fn load_or_build_gretil_index_cli() -> Vec<daizo_core::IndexEntry> {
+    let out = cache_dir().join("gretil-index.json");
+    if let Ok(b) = std::fs::read(&out) {
+        if let Ok(v) = serde_json::from_slice::<Vec<daizo_core::IndexEntry>>(&b) {
+            let missing = v.iter().take(10).filter(|e| !std::path::Path::new(&e.path).exists()).count();
+            if !v.is_empty() && missing == 0 { return v; }
+        }
+    }
+    let entries = build_gretil_index(&gretil_root());
+    let _ = std::fs::create_dir_all(cache_dir());
+    let _ = std::fs::write(&out, serde_json::to_vec(&entries).unwrap_or_default());
+    entries
+}
+
 // directory scans are provided by daizo_core::path_resolver
 
 pub(crate) fn resolve_tipitaka_path(id: Option<&str>, query: Option<&str>) -> PathBuf {
@@ -844,6 +1024,41 @@ pub(crate) fn resolve_cbeta_path_cli(id: Option<&str>, query: Option<&str>) -> P
         if let Some(hit) = best_match(&idx, q, 1).into_iter().next() { return PathBuf::from(&hit.entry.path); }
     }
     PathBuf::new()
+}
+
+pub(crate) fn resolve_gretil_path_cli(id: Option<&str>, query: Option<&str>) -> PathBuf {
+    if let Some(id) = id {
+        let idx = load_or_build_gretil_index_cli();
+        if let Some(p) = resolve_gretil_by_id(&idx, id) { return p; }
+        if let Some(p) = find_exact_file_by_name(&gretil_root(), &format!("{}.xml", id)) { return p; }
+    } else if let Some(q) = query {
+        let idx = load_or_build_gretil_index_cli();
+        if let Some(hit) = best_match_gretil(&idx, q, 1).into_iter().next() { return PathBuf::from(&hit.entry.path); }
+    }
+    PathBuf::new()
+}
+
+fn best_match_gretil<'a>(entries: &'a [daizo_core::IndexEntry], q: &str, limit: usize) -> Vec<ScoredHit<'a>> {
+    let nq = normalized(q);
+    let mut scored: Vec<(f32, &daizo_core::IndexEntry)> = entries
+        .iter()
+        .map(|e| {
+            let mut s = compute_match_score_sanskrit(e, q);
+            if let Some(meta) = &e.meta {
+                for k in ["author", "editor", "translator", "publisher"].iter() {
+                    if let Some(v) = meta.get(*k) {
+                        let nv = normalized(v);
+                        if !nv.is_empty() && (nv.contains(&nq) || nq.contains(&nv)) {
+                            s = s.max(0.93);
+                        }
+                    }
+                }
+            }
+            (s, e)
+        })
+        .collect();
+    scored.sort_by(|a,b| b.0.partial_cmp(&a.0).unwrap());
+    scored.into_iter().take(limit).map(|(s,e)| ScoredHit { entry: e, score: s }).collect()
 }
 
 pub(crate) fn extract_section_by_head(xml: &str, head_index: Option<usize>, head_query: Option<&str>) -> Option<String> {
@@ -969,4 +1184,4 @@ pub(crate) fn sniff_xml_encoding(head: &[u8]) -> Option<String> {
 
 //
 mod cmd;
-use cmd::{cbeta as cmd_cbeta, tipitaka as cmd_tipitaka};
+use cmd::{cbeta as cmd_cbeta, tipitaka as cmd_tipitaka, gretil as cmd_gretil};

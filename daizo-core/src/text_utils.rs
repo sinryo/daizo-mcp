@@ -47,6 +47,78 @@ pub fn normalized_pali(s: &str) -> String {
     t.chars().filter(|c| c.is_alphanumeric()).collect()
 }
 
+/// Sanskrit-friendly normalization: fold IAST diacritics to ASCII-ish
+pub fn normalized_sanskrit(s: &str) -> String {
+    let t: String = s.nfkd().collect::<String>().to_lowercase();
+    let t = t
+        .chars()
+        .map(|c| match c {
+            // Long vowels
+            'ā' => 'a', 'ī' => 'i', 'ū' => 'u', 'ȳ' => 'y',
+            // Retroflex/dental/aspirates
+            'ṭ' => 't', 'ḍ' => 'd', 'ṇ' => 'n', 'ḷ' => 'l', 'ḹ' => 'l', 'ḻ' => 'l',
+            // Sibilants and palatals
+            'ś' => 's', 'ṣ' => 's', 'ç' => 'c',
+            // Nasals and anusvāra/visarga
+            'ṅ' => 'n', 'ñ' => 'n', 'ṃ' => 'm', 'ṁ' => 'm', 'ḥ' => 'h',
+            // Vocalic r/ḷ
+            'ṛ' => 'r', 'ṝ' => 'r',
+            _ => c,
+        })
+        .collect::<String>();
+    t.chars().filter(|c| c.is_alphanumeric()).collect()
+}
+
+/// Compute match score with Sanskrit diacritic folding
+pub fn compute_match_score_sanskrit(entry: &IndexEntry, q: &str) -> f32 {
+    let nq = normalized(q);
+    let meta_str = entry
+        .meta
+        .as_ref()
+        .map(|m| m.values().cloned().collect::<Vec<_>>().join(" "))
+        .unwrap_or_default();
+    let alias = entry
+        .meta
+        .as_ref()
+        .and_then(|m| m.get("alias"))
+        .cloned()
+        .unwrap_or_default();
+    let hay_all = format!("{} {} {}", entry.title, entry.id, meta_str);
+    let hay = normalized(&hay_all);
+
+    let mut score = if hay.contains(&nq) {
+        1.0
+    } else {
+        let s_char = jaccard(&hay, &nq);
+        let s_tok = token_jaccard(&hay_all, q);
+        let hay_fold = normalized_sanskrit(&hay_all);
+        let nq_fold = normalized_sanskrit(q);
+        s_char.max(s_tok).max(jaccard(&hay_fold, &nq_fold))
+    };
+    if score < 0.95 {
+        let subseq = is_subsequence(&hay, &nq)
+            || is_subsequence(&nq, &hay)
+            || is_subsequence(&normalized_sanskrit(&hay_all), &normalized_sanskrit(q));
+        if subseq { score = score.max(0.85); }
+    }
+    let nalias = normalized_with_spaces(&alias).replace(' ', "");
+    let nalias_fold = normalized_sanskrit(&alias);
+    let nq_nospace = normalized_with_spaces(q).replace(' ', "");
+    if !nalias.is_empty() {
+        if nalias.split_whitespace().any(|a| a == nq_nospace)
+            || nalias.contains(&nq_nospace)
+            || (!nalias_fold.is_empty() && nalias_fold.contains(&normalized_sanskrit(q)))
+        { score = score.max(0.95); }
+    }
+    if q.chars().any(|c| c.is_ascii_digit()) {
+        let hws = normalized_with_spaces(&hay_all);
+        if hws.contains(&normalized_with_spaces(q)) {
+            score = (score + 0.05).min(1.0);
+        }
+    }
+    score
+}
+
 pub fn tokenset(s: &str) -> HashSet<String> {
     normalized_with_spaces(s)
         .split_whitespace()

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use daizo_core::{build_tipitaka_index, build_cbeta_index, extract_text, extract_text_opts, extract_cbeta_juan, list_heads_cbeta, list_heads_generic, IndexEntry, cbeta_grep, tipitaka_grep};
+use daizo_core::{build_tipitaka_index, build_cbeta_index, build_gretil_index, extract_text, extract_text_opts, extract_cbeta_juan, list_heads_cbeta, list_heads_generic, IndexEntry, cbeta_grep, tipitaka_grep, gretil_grep};
 use regex::Regex;
 use reqwest::blocking::Client;
 use scraper::{Html, Selector};
@@ -12,13 +12,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use encoding_rs::Encoding;
-use daizo_core::text_utils::{normalized, token_jaccard, jaccard, is_subsequence};
+use daizo_core::text_utils::{normalized, token_jaccard, jaccard, is_subsequence, compute_match_score_sanskrit};
 use daizo_core::path_resolver::{
     resolve_cbeta_path_by_id,
     resolve_tipitaka_by_id,
     find_tipitaka_content_for_base,
     find_exact_file_by_name,
     cbeta_root,
+    gretil_root,
     tipitaka_root,
     cache_dir,
     daizo_home,
@@ -167,7 +168,7 @@ fn handle_initialize(id: serde_json::Value) -> serde_json::Value {
                 "prompts": {},
                 "logging": {}
             },
-            "serverInfo": { "name": "daizo-mcp", "version": "0.1.2" }
+            "serverInfo": { "name": "daizo-mcp", "version": "0.3.0" }
         }
     })
 }
@@ -269,6 +270,49 @@ fn tools_list() -> Vec<serde_json::Value> {
             "maxMatchesPerFile":{"type":"number","description":"Maximum matches per file (default: 5)"}
         },"required":["query"]})),
         tool("tipitaka_title_search", "Title-based search in Tipitaka corpus", json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"}},"required":["query"]})),
+        // GRETIL (Sanskrit TEI)
+        tool("gretil_title_search", "Title-based search in GRETIL corpus", json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"}},"required":["query"]})),
+        tool("gretil_search", "Fast regex content search across GRETIL TEI (returns line numbers)", json!({"type":"object","properties":{
+            "query":{"type":"string","description":"Regular expression pattern to search for"},
+            "maxResults":{"type":"number","description":"Maximum number of files to return (default: 20)"},
+            "maxMatchesPerFile":{"type":"number","description":"Maximum matches per file (default: 5)"}
+        },"required":["query"]})),
+        tool("gretil_fetch", "Retrieve GRETIL text by ID with line-based context retrieval", json!({"type":"object","properties":{
+            "id":{"type":"string"},
+            "query":{"type":"string"},
+            "includeNotes":{"type":"boolean"},
+            "full":{"type":"boolean","description":"Return full text without slicing"},
+            "highlight":{"type":"string","description":"Highlight string or regex pattern (used with lineNumber-based context)"},
+            "highlightRegex":{"type":"boolean","description":"Interpret highlight as regex (default false)"},
+            "highlightPrefix":{"type":"string","description":"Prefix marker for highlights (default '>>> ')"},
+            "highlightSuffix":{"type":"string","description":"Suffix marker for highlights (default ' <<<')"},
+            "headingsLimit":{"type":"number"},
+            "startChar":{"type":"number"},"endChar":{"type":"number"},"maxChars":{"type":"number"},
+            "page":{"type":"number"},"pageSize":{"type":"number"},
+            "lineNumber":{"type":"number","description":"Target line number for context extraction"},
+            "contextBefore":{"type":"number","description":"Number of lines before target line (default: 10)"},
+            "contextAfter":{"type":"number","description":"Number of lines after target line (default: 100)"},
+            "contextLines":{"type":"number","description":"Number of lines before/after target line (deprecated, use contextBefore/contextAfter)"}
+        }})),
+        tool("gretil_pipeline", "Search GRETIL content, return results with optional auto-fetch of contexts or full text", json!({"type":"object","properties":{
+            "query":{"type":"string"},
+            "maxResults":{"type":"number"},
+            "maxMatchesPerFile":{"type":"number"},
+            "contextBefore":{"type":"number"},
+            "contextAfter":{"type":"number"},
+            "autoFetch":{"type":"boolean"},
+            "autoFetchFiles":{"type":"number","description":"Auto-fetch top N files (default 1 when autoFetch=true)"},
+            "includeMatchLine":{"type":"boolean","description":"Include the matched line in auto-fetched context (default true)"},
+            "includeHighlightSnippet":{"type":"boolean","description":"Include a short highlight snippet before each context (default true)"},
+            "snippetPrefix":{"type":"string","description":"Prefix for highlight snippets in pipeline (default '>>> ')"},
+            "snippetSuffix":{"type":"string","description":"Suffix for highlight snippets in pipeline (default '')"},
+            "highlight":{"type":"string","description":"Highlight string or regex pattern inside contexts"},
+            "highlightRegex":{"type":"boolean","description":"Interpret highlight as regex (default false)"},
+            "highlightPrefix":{"type":"string","description":"Prefix marker for highlights (default from env or '>>> ')"},
+            "highlightSuffix":{"type":"string","description":"Suffix marker for highlights (default from env or ' <<<')"},
+            "full":{"type":"boolean"},
+            "includeNotes":{"type":"boolean"}
+        },"required":["query"]})),
     ]
 }
 
@@ -320,6 +364,16 @@ fn load_or_build_tipitaka_index() -> Vec<IndexEntry> {
     let _ = save_index(&out, &entries);
     entries
 }
+fn load_or_build_gretil_index() -> Vec<IndexEntry> {
+    let out = cache_dir().join("gretil-index.json");
+    if let Some(v) = load_index(&out) {
+        let missing = v.iter().take(10).filter(|e| !Path::new(&e.path).exists()).count();
+        if v.is_empty() || missing > 0 { /* rebuild */ } else { return v; }
+    }
+    let entries = build_gretil_index(&gretil_root());
+    let _ = save_index(&out, &entries);
+    entries
+}
 
 #[derive(Clone, Debug, Serialize)]
 struct ScoredHit<'a> { #[serde(skip_serializing)] entry: &'a IndexEntry, score: f32 }
@@ -351,6 +405,29 @@ fn best_match_tipitaka<'a>(entries: &'a [IndexEntry], q: &str, limit: usize) -> 
     let mut scored: Vec<(f32, &IndexEntry)> = entries
         .iter()
         .map(|e| (daizo_core::text_utils::compute_match_score(e, q, true), e))
+        .collect();
+    scored.sort_by(|a,b| b.0.partial_cmp(&a.0).unwrap());
+    scored.into_iter().take(limit).map(|(s,e)| ScoredHit { entry: e, score: s }).collect()
+}
+
+fn best_match_gretil<'a>(entries: &'a [IndexEntry], q: &str, limit: usize) -> Vec<ScoredHit<'a>> {
+    let nq = normalized(q);
+    let mut scored: Vec<(f32, &IndexEntry)> = entries
+        .iter()
+        .map(|e| {
+            let mut s = compute_match_score_sanskrit(e, q);
+            if let Some(meta) = &e.meta {
+                for k in ["author", "editor", "translator", "publisher"].iter() {
+                    if let Some(v) = meta.get(*k) {
+                        let nv = normalized(v);
+                        if !nv.is_empty() && (nv.contains(&nq) || nq.contains(&nv)) {
+                            s = s.max(0.93);
+                        }
+                    }
+                }
+            }
+            (s, e)
+        })
         .collect();
     scored.sort_by(|a,b| b.0.partial_cmp(&a.0).unwrap());
     scored.into_iter().take(limit).map(|(s,e)| ScoredHit { entry: e, score: s }).collect()
@@ -1041,6 +1118,205 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                 if !fetched.is_empty() { meta["autoFetched"] = json!(fetched); }
             }
 
+            return json!({"jsonrpc":"2.0","id": id, "result": { "content": content_items, "_meta": meta }});
+        }
+        "gretil_title_search" => {
+            let q_raw = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            let looks_like_regex = q_raw.chars().any(|c| ".+*?[](){}|\\".contains(c));
+            let q = if q_raw.chars().any(|c| c.is_whitespace()) && !looks_like_regex {
+                to_whitespace_fuzzy_literal(q_raw)
+            } else { q_raw.to_string() };
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+            let idx = load_or_build_gretil_index();
+            let hits = best_match_gretil(&idx, &q, limit);
+            let summary = hits.iter().enumerate().map(|(i,h)| format!("{}. {}  {}", i+1, h.entry.id, h.entry.title)).collect::<Vec<_>>().join("\n");
+            let results: Vec<_> = hits.iter().map(|h| json!({
+                "id": h.entry.id,
+                "title": h.entry.title,
+                "path": h.entry.path,
+                "score": h.score
+            })).collect();
+            let meta = json!({ "count": results.len(), "results": results });
+            return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary }], "_meta": meta }});
+        }
+        "gretil_fetch" => {
+            let mut matched_id: Option<String> = None;
+            let mut matched_title: Option<String> = None;
+            let mut matched_score: Option<f32> = None;
+            let mut path: PathBuf = PathBuf::new();
+            if let Some(id) = args.get("id").and_then(|v| v.as_str()) {
+                let idx = load_or_build_gretil_index();
+                if let Some(p) = daizo_core::path_resolver::resolve_gretil_by_id(&idx, id) {
+                    matched_id = Path::new(&p).file_stem().map(|s| s.to_string_lossy().into_owned());
+                    if let Some(e) = idx.iter().find(|e| e.path == p.to_string_lossy()) { matched_title = Some(e.title.clone()); }
+                    path = p;
+                }
+            } else if let Some(q) = args.get("query").and_then(|v| v.as_str()) {
+                let idx = load_or_build_gretil_index();
+                if let Some(hit) = best_match_gretil(&idx, q, 1).into_iter().next() {
+                    matched_title = Some(hit.entry.title.clone());
+                    matched_score = Some(hit.score);
+                    matched_id = Path::new(&hit.entry.path).file_stem().map(|s| s.to_string_lossy().into_owned());
+                    path = PathBuf::from(&hit.entry.path);
+                }
+            }
+            if path.as_os_str().is_empty() { return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": "not found"}] }}); }
+            let xml = fs::read_to_string(&path).unwrap_or_default();
+            let include_notes = args.get("includeNotes").and_then(|v| v.as_bool()).unwrap_or(false);
+            let (text, extraction_method) = if let Some(line_num) = args.get("lineNumber").and_then(|v| v.as_u64()) {
+                let before = args.get("contextBefore").and_then(|v| v.as_u64()).unwrap_or(args.get("contextLines").and_then(|v| v.as_u64()).unwrap_or(10)) as usize;
+                let after = args.get("contextAfter").and_then(|v| v.as_u64()).unwrap_or(args.get("contextLines").and_then(|v| v.as_u64()).unwrap_or(100)) as usize;
+                let context_text = daizo_core::extract_xml_around_line_asymmetric(&xml, line_num as usize, before, after);
+                (context_text, format!("line-context-{}-{}-{}", line_num, before, after))
+            } else {
+                (extract_text_opts(&xml, include_notes), "full".to_string())
+            };
+            let full_flag = args.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
+            let mut sliced = if full_flag { text.clone() } else { slice_text(&text, &args) };
+            let mut highlight_count = 0usize; let mut highlight_positions: Vec<serde_json::Value> = Vec::new();
+            if let Some(hpat) = args.get("highlight").and_then(|v| v.as_str()) {
+                let use_re = args.get("highlightRegex").and_then(|v| v.as_bool()).unwrap_or(false);
+                let hpre = args.get("highlightPrefix").and_then(|v| v.as_str()).unwrap_or(">>> ");
+                let hsuf = args.get("highlightSuffix").and_then(|v| v.as_str()).unwrap_or(" <<<");
+                let original = sliced.clone();
+                if use_re {
+                    if let Ok(re) = regex::Regex::new(hpat) {
+                        for m in re.find_iter(&original) {
+                            let sb = m.start(); let eb = m.end();
+                            let sc = original[..sb].chars().count(); let ec = sc + original[sb..eb].chars().count();
+                            highlight_positions.push(json!({"startChar": sc, "endChar": ec}));
+                        }
+                        let mut count = 0usize;
+                        let replaced = re.replace_all(&sliced, |caps: &regex::Captures| { count += 1; format!("{}{}{}", hpre, &caps[0], hsuf) });
+                        sliced = replaced.into_owned(); highlight_count = count;
+                    }
+                } else if !hpat.is_empty() {
+                    let mut i = 0usize;
+                    while let Some(pos) = original[i..].find(hpat) { let abs = i + pos; let sc = original[..abs].chars().count(); let ec = sc + hpat.chars().count(); highlight_positions.push(json!({"startChar": sc, "endChar": ec})); i = abs + hpat.len(); }
+                    let mut out = String::with_capacity(sliced.len()); let mut j = 0usize;
+                    while let Some(pos) = sliced[j..].find(hpat) { let abs = j + pos; out.push_str(&sliced[j..abs]); out.push_str(hpre); out.push_str(hpat); out.push_str(hsuf); j = abs + hpat.len(); highlight_count += 1; }
+                    out.push_str(&sliced[j..]); sliced = out;
+                }
+            }
+            let heads = list_heads_generic(&xml);
+            let hl = args.get("headingsLimit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+            let meta = json!({
+                "totalLength": text.len(),
+                "returnedStart": args.get("startChar").and_then(|v| v.as_u64()).unwrap_or( args.get("page").and_then(|v| v.as_u64()).and_then(|p| args.get("pageSize").and_then(|s| s.as_u64()).map(|ps| p*ps)).unwrap_or(0) ),
+                "returnedEnd": args.get("startChar").and_then(|v| v.as_u64()).unwrap_or( args.get("page").and_then(|v| v.as_u64()).and_then(|p| args.get("pageSize").and_then(|s| s.as_u64()).map(|ps| p*ps)).unwrap_or(0) ) + (sliced.len() as u64),
+                "truncated": if full_flag { false } else { (sliced.len() as u64) < (text.len() as u64) },
+                "sourcePath": path.to_string_lossy(),
+                "extractionMethod": extraction_method,
+                "headingsTotal": heads.len(),
+                "headingsPreview": heads.into_iter().take(hl).collect::<Vec<_>>(),
+                "matchedId": matched_id,
+                "matchedTitle": matched_title,
+                "matchedScore": matched_score,
+                "highlighted": if highlight_count > 0 { Some(highlight_count) } else { None::<usize> },
+                "highlightPositions": if highlight_positions.is_empty() { None::<Vec<serde_json::Value>> } else { Some(highlight_positions) },
+            });
+            return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": sliced}], "_meta": meta }});
+        }
+        "gretil_search" => {
+            let q_raw = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            let looks_like_regex = q_raw.chars().any(|c| ".+*?[](){}|\\".contains(c));
+            let q = if q_raw.chars().any(|c| c.is_whitespace()) && !looks_like_regex { to_whitespace_fuzzy_literal(q_raw) } else { q_raw.to_string() };
+            let max_results = args.get("maxResults").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+            let max_matches_per_file = args.get("maxMatchesPerFile").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+            let results = gretil_grep(&gretil_root(), &q, max_results, max_matches_per_file);
+            let mut summary = format!("Found {} files with matches for '{}':\n\n", results.len(), q);
+            for (i, result) in results.iter().enumerate() {
+                summary.push_str(&format!("{}. {} ({})\n", i + 1, result.title, result.file_id));
+                summary.push_str(&format!("   {} matches, {}\n", result.total_matches, result.fetch_hints.total_content_size.as_deref().unwrap_or("unknown size")));
+                for (j, m) in result.matches.iter().enumerate().take(2) { summary.push_str(&format!("   Match {}: ...{}...\n", j + 1, m.context.chars().take(100).collect::<String>())); }
+                if result.matches.len() > 2 { summary.push_str(&format!("   ... and {} more matches\n", result.matches.len() - 2)); }
+                summary.push('\n');
+            }
+            let meta = json!({ "searchPattern": q, "totalFiles": results.len(), "results": results, "hint": "Use gretil_fetch with the file_id to get full content" });
+            return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary}], "_meta": meta }});
+        }
+        "gretil_pipeline" => {
+            let q_raw = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            let looks_like_regex = q_raw.chars().any(|c| ".+*?[](){}|\\".contains(c));
+            let q = if q_raw.chars().any(|c| c.is_whitespace()) && !looks_like_regex { to_whitespace_fuzzy_literal(q_raw) } else { q_raw.to_string() };
+            let context_before = args.get("contextBefore").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+            let context_after = args.get("contextAfter").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
+            let max_results = args.get("maxResults").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+            let max_matches_per_file = args.get("maxMatchesPerFile").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
+            let include_match_line = args.get("includeMatchLine").and_then(|v| v.as_bool()).unwrap_or(true);
+            let results = gretil_grep(&gretil_root(), &q, max_results, max_matches_per_file);
+            let mut content_items: Vec<serde_json::Value> = Vec::new();
+            let mut meta = json!({ "searchPattern": q, "totalFiles": results.len(), "results": results });
+            let summary = format!("Found {} files with matches for '{}'", results.len(), q);
+            content_items.push(json!({"type":"text","text": summary}));
+            if args.get("autoFetch").and_then(|v| v.as_bool()).unwrap_or(false) {
+                let full = args.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
+                let include_notes = args.get("includeNotes").and_then(|v| v.as_bool()).unwrap_or(false);
+                let tf = args.get("autoFetchFiles").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
+                let tf = tf.min(results.len());
+                let mut fetched: Vec<serde_json::Value> = Vec::new();
+                let hl_pre = args.get("highlightPrefix").and_then(|v| v.as_str()).map(|s| s.to_string())
+                    .or_else(|| std::env::var("DAIZO_HL_PREFIX").ok())
+                    .unwrap_or_else(|| ">>> ".to_string());
+                let hl_suf = args.get("highlightSuffix").and_then(|v| v.as_str()).map(|s| s.to_string())
+                    .or_else(|| std::env::var("DAIZO_HL_SUFFIX").ok())
+                    .unwrap_or_else(|| " <<<".to_string());
+                let sn_pre = args.get("snippetPrefix").and_then(|v| v.as_str()).map(|s| s.to_string())
+                    .or_else(|| std::env::var("DAIZO_SNIPPET_PREFIX").ok())
+                    .unwrap_or_else(|| ">>> ".to_string());
+                let sn_suf = args.get("snippetSuffix").and_then(|v| v.as_str()).map(|s| s.to_string())
+                    .or_else(|| std::env::var("DAIZO_SNIPPET_SUFFIX").ok())
+                    .unwrap_or_else(|| "".to_string());
+                let mut file_highlights_all: Vec<Vec<serde_json::Value>> = Vec::new();
+                for r in results.iter().take(tf) {
+                    let per_file_limit = args.get("autoFetchMatches").and_then(|v| v.as_u64()).unwrap_or(max_matches_per_file as u64) as usize;
+                    let xml = fs::read_to_string(&r.file_path).unwrap_or_default();
+                    if full {
+                        let text = extract_text_opts(&xml, include_notes);
+                        content_items.push(json!({"type":"text","text": text}));
+                        fetched.push(json!({"id": r.file_id, "full": true}));
+                    } else {
+                        let mut combined = String::new();
+                        let mut highlight_counts: Vec<usize> = Vec::new();
+                        let mut file_highlights: Vec<serde_json::Value> = Vec::new();
+                        for m in r.matches.iter().take(per_file_limit) {
+                            if let Some(ln) = m.line_number {
+                                let mut ctx = daizo_core::extract_xml_around_line_asymmetric(&xml, ln, context_before, context_after);
+                                let mut chigh: Vec<serde_json::Value> = Vec::new();
+                                if let Some(pat) = args.get("highlight").and_then(|v| v.as_str()) {
+                                    let looks_like = pat.chars().any(|c| ".+*?[](){}|\\".contains(c));
+                                    let mut hlr = args.get("highlightRegex").and_then(|v| v.as_bool()).unwrap_or(false);
+                                    let pat = if pat.chars().any(|c| c.is_whitespace()) && !looks_like && !hlr { hlr = true; to_whitespace_fuzzy_literal(pat) } else { pat.to_string() };
+                                    if hlr { if let Ok(re) = regex::Regex::new(&pat) {
+                                        for mm in re.find_iter(&ctx) { let sb = mm.start(); let eb = mm.end(); let sc = ctx[..sb].chars().count(); let ec = sc + ctx[sb..eb].chars().count(); chigh.push(json!({"startChar": sc, "endChar": ec})); }
+                                        let mut ct = 0usize; let rep = re.replace_all(&ctx, |caps: &regex::Captures| { ct += 1; format!("{}{}{}", hl_pre, &caps[0], hl_suf) }); ctx = rep.into_owned(); highlight_counts.push(ct);
+                                    }} else if !pat.is_empty() {
+                                        let mut i = 0usize; while let Some(pos) = ctx[i..].find(&pat) { let abs = i + pos; let sc = ctx[..abs].chars().count(); let ec = sc + pat.chars().count(); chigh.push(json!({"startChar": sc, "endChar": ec})); i = abs + pat.len(); }
+                                    let mut out = String::with_capacity(ctx.len()); let mut j = 0usize; let mut ct = 0usize; while let Some(pos) = ctx[j..].find(&pat) { let abs = j + pos; out.push_str(&ctx[j..abs]); out.push_str(&hl_pre); out.push_str(&pat); out.push_str(&hl_suf); j = abs + pat.len(); ct += 1; } out.push_str(&ctx[j..]); ctx = out; highlight_counts.push(ct);
+                                    }
+                                }
+                                if args.get("includeHighlightSnippet").and_then(|v| v.as_bool()).unwrap_or(true) {
+                                    let min_len = args.get("minSnippetLen").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                                    let snip = ctx.chars().take(std::cmp::max(min_len, 120)).collect::<String>();
+                                    combined.push_str(&format!("{}{}{}\n", &sn_pre, snip, &sn_suf));
+                                } else {
+                                    combined.push_str(&format!("# {}{}\n\n{}", r.file_id, if include_match_line { format!(" (line {})", ln) } else { String::new() }, ctx));
+                                }
+                                file_highlights.push(json!(chigh));
+                            }
+                        }
+                        if !combined.is_empty() {
+                            content_items.push(json!({"type":"text","text": combined}));
+                            let mut fobj = json!({"id": r.file_id, "full": false, "contextBefore": context_before, "contextAfter": context_after, "includeMatchLine": include_match_line});
+                            if highlight_counts.iter().any(|&c| c > 0) { fobj["highlightCounts"] = json!(highlight_counts); }
+                            fobj["highlightPositions"] = json!(file_highlights);
+                            fetched.push(fobj);
+                        }
+                        file_highlights_all.push(file_highlights);
+                    }
+                }
+                if !fetched.is_empty() { meta["autoFetched"] = json!(fetched); }
+            }
             return json!({"jsonrpc":"2.0","id": id, "result": { "content": content_items, "_meta": meta }});
         }
         "tipitaka_search" => {

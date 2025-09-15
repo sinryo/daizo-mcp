@@ -116,6 +116,41 @@ for b in daizo-cli daizo-mcp; do
 done
 echo -e "\033[32m✅ Binary installation completed / バイナリインストール完了 / 二進制文件安裝完成\033[0m"
 
+echo -e "\033[36m📚 Fetching GRETIL Sanskrit corpus... / GRETILサンスクリット語コーパスを取得中... / 正在下載 GRETIL 梵文語料庫...\033[0m"
+GRETIL_URL="https://gretil.sub.uni-goettingen.de/gretil/1_sanskr.zip"
+GRETIL_DIR="$PREFIX/GRETIL"
+GRETIL_ZIP="$GRETIL_DIR/1_sanskr.zip"
+mkdir -p "$GRETIL_DIR"
+
+if [ -f "$GRETIL_ZIP" ]; then
+  echo "[gretil] zip already present, skip download: $GRETIL_ZIP"
+else
+  echo "[gretil] download -> $GRETIL_ZIP"
+  if command -v curl >/dev/null 2>&1; then
+    curl -L --fail --retry 3 -o "$GRETIL_ZIP" "$GRETIL_URL"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -O "$GRETIL_ZIP" "$GRETIL_URL"
+  else
+    echo "[error] neither curl nor wget is available to download $GRETIL_URL" >&2
+    exit 1
+  fi
+fi
+
+STAMP_FILE="$GRETIL_DIR/.extracted-1_sanskr"
+if [ -f "$STAMP_FILE" ] || find "$GRETIL_DIR" -mindepth 1 -not -name "$(basename "$GRETIL_ZIP")" -print -quit | grep -q . ; then
+  echo "[gretil] already extracted, skip unzip"
+else
+  echo "[gretil] unzip into $GRETIL_DIR"
+  if command -v unzip >/dev/null 2>&1; then
+    unzip -oq "$GRETIL_ZIP" -d "$GRETIL_DIR"
+    touch "$STAMP_FILE"
+  else
+    echo "[error] 'unzip' command not found; please install it and re-run" >&2
+    exit 1
+  fi
+  echo -e "\033[32m✅ GRETIL fetched and extracted / GRETILの取得と展開が完了 / GRETIL 下載並解壓完成\033[0m"
+fi
+
 echo -e "\033[36m📥 Downloading Buddhist texts and building indexes... / お経データのダウンロードとインデックス構築中... / 正在下載佛經文本並構建索引...\033[0m"
 echo "[index] rebuilding indexes (this will automatically download/update data)"
 DAIZO_DIR="$PREFIX" "$BIN_OUT/daizo-cli" index-rebuild --source all || {

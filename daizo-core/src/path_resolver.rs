@@ -15,6 +15,7 @@ pub fn daizo_home() -> PathBuf {
 
 pub fn cbeta_root() -> PathBuf { daizo_home().join("xml-p5") }
 pub fn tipitaka_root() -> PathBuf { daizo_home().join("tipitaka-xml").join("romn") }
+pub fn gretil_root() -> PathBuf { daizo_home().join("GRETIL").join("1_sanskr").join("tei") }
 pub fn cache_dir() -> PathBuf { daizo_home().join("cache") }
 
 pub fn find_in_dir(root: &Path, stem_hint: &str) -> Option<PathBuf> {
@@ -152,6 +153,35 @@ pub fn resolve_tipitaka_by_id(index: &[IndexEntry], id: &str) -> Option<PathBuf>
     if let Some(p) = find_in_dir(&tipitaka_root(), id) { return Some(p); }
     // exact filename fallback
     find_exact_file_by_name(&tipitaka_root(), &format!("{}.xml", id))
+}
+
+/// Resolve a GRETIL TEI path by id (file stem) using index and fallbacks under GRETIL/1_sanskr/tei.
+pub fn resolve_gretil_by_id(index: &[IndexEntry], id: &str) -> Option<PathBuf> {
+    // exact stem match via index first
+    for e in index.iter() {
+        if Path::new(&e.path)
+            .file_stem()
+            .map(|s| s == id)
+            .unwrap_or(false)
+        {
+            return Some(PathBuf::from(&e.path));
+        }
+    }
+    // contains match via index
+    for e in index.iter() {
+        if Path::new(&e.path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_lowercase().contains(&id.to_lowercase()))
+            .unwrap_or(false)
+        {
+            return Some(PathBuf::from(&e.path));
+        }
+    }
+    // direct directory scan
+    if let Some(p) = find_in_dir(&gretil_root(), id) { return Some(p); }
+    // strict filename fallback
+    find_exact_file_by_name(&gretil_root(), &format!("{}.xml", id))
 }
 
 #[cfg(test)]

@@ -1,13 +1,13 @@
 # daizo-mcp
 
-An MCP (Model Context Protocol) server plus CLI for fast Buddhist text search and retrieval. Supports CBETA (Chinese), Pāli Tipitaka (romanized), and SAT (online). Implemented in Rust for speed and reliability.
+An MCP (Model Context Protocol) server plus CLI for fast Buddhist text search and retrieval. Supports CBETA (Chinese), Pāli Tipitaka (romanized), GRETIL (Sanskrit TEI), and SAT (online). Implemented in Rust for speed and reliability.
 
 See also: [日本語 README](README.ja.md) | [繁體中文 README](README.zh-TW.md)
 
 ## Highlights
 
-- Fast regex/content search with line numbers (CBETA/Tipitaka)
-- Title search across CBETA and Tipitaka indices
+- Fast regex/content search with line numbers (CBETA/Tipitaka/GRETIL)
+- Title search across CBETA, Tipitaka, and GRETIL indices
 - Precise context fetching by line number or character range
 - Optional SAT online search with smart caching
 - One-shot bootstrap and index build
@@ -56,6 +56,7 @@ daizo-cli tipitaka-title-search --query "dn 1" --json
 # Content search (with line numbers)
 daizo-cli cbeta-search --query "阿弥陀" --max-results 10
 daizo-cli tipitaka-search --query "nibbana|vipassana" --max-results 15
+daizo-cli gretil-search --query "yoga" --max-results 10
 ```
 
 Fetch:
@@ -64,6 +65,7 @@ Fetch:
 # Fetch by ID
 daizo-cli cbeta-fetch --id T0858 --part 1 --max-chars 4000 --json
 daizo-cli tipitaka-fetch --id e0101n.mul --max-chars 2000 --json
+daizo-cli gretil-fetch --query "Bhagavadgita" --max-chars 4000 --json
 
 # Context around a line (after search)
 daizo-cli cbeta-fetch --id T0858 --line-number 342 --context-before 10 --context-after 200
@@ -85,17 +87,20 @@ daizo-cli update --yes              # reinstall this CLI
 Search:
 - `cbeta_title_search`, `cbeta_search`
 - `tipitaka_title_search`, `tipitaka_search`
+- `gretil_title_search`, `gretil_search`
 - `sat_search`
 
 Fetch:
 - `cbeta_fetch` (supports `lineNumber`, `contextBefore`, `contextAfter`)
 - `tipitaka_fetch` (supports `lineNumber`, `contextBefore`, `contextAfter`)
+- `gretil_fetch` (supports `lineNumber`, `contextBefore`, `contextAfter`)
 - `sat_fetch`, `sat_pipeline`
 
 ## Data Sources
 
 - CBETA: https://github.com/cbeta-org/xml-p5
 - Tipitaka (romanized): https://github.com/VipassanaTech/tipitaka-xml
+- GRETIL (Sanskrit TEI): https://gretil.sub.uni-goettingen.de/
 - SAT (online): wrap7/detail endpoints
 
 ## Directories and Env
