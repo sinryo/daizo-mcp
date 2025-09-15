@@ -212,7 +212,7 @@ fn handle_initialize(id: serde_json::Value) -> serde_json::Value {
                 },
                 "logging": {}
             },
-            "serverInfo": { "name": "daizo-mcp", "version": "0.3.3" }
+            .3.5" }
         }
     })
 }
@@ -511,6 +511,14 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
     let content_text = match name {
+        "daizo_usage" => {
+            let guide = "Low-token guide:\n\n- Use search → read _meta.fetchSuggestions\n- Then call *_fetch with {id, lineNumber, contextBefore:1, contextAfter:3}\n- Use *_pipeline only for multi-file summary; set autoFetch=false by default\n- Search tools may also provide _meta.pipelineHint\n- Control number of suggestions via DAIZO_HINT_TOP (default 1)";
+            return json!({
+                "jsonrpc":"2.0",
+                "id": id,
+                "result": { "content": [{"type":"text","text": guide}], "_meta": {"source": "daizo_usage"} }
+            });
+        }
         "cbeta_title_search" => {
             let q_raw = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
             let looks_like_regex = q_raw.chars().any(|c| ".+*?[](){}|\\".contains(c));
