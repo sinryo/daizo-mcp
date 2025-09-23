@@ -2,22 +2,21 @@ use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
 use rayon::prelude::*;
 use serde::Serialize;
-use std::collections::BTreeMap;
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
-use unicode_normalization::UnicodeNormalization;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use unicode_normalization::UnicodeNormalization;
 use walkdir::WalkDir;
 
-use serde::Deserialize;
 use encoding_rs;
+use serde::Deserialize;
 
-pub mod text_utils;
 pub mod path_resolver;
 pub mod repo;
-
+pub mod text_utils;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct IndexEntry {
@@ -96,60 +95,88 @@ pub fn build_index(root: &Path, glob_hint: Option<&str>) -> Vec<IndexEntry> {
                         let name_owned = e.name().as_ref().to_owned();
                         let name = local_name(&name_owned);
                         if id.is_none() {
-                            if let Some(v) = attr_val(&e, b"xml:id") { id = Some(v.to_string()); }
+                            if let Some(v) = attr_val(&e, b"xml:id") {
+                                id = Some(v.to_string());
+                            }
                         }
                         // stack push for fallback scanning
                         path_stack.push(name.to_vec());
 
-                        if name == b"teiHeader" { in_header = true; }
-                        if in_header && name == b"title" { in_title = true; }
+                        if name == b"teiHeader" {
+                            in_header = true;
+                        }
+                        if in_header && name == b"title" {
+                            in_title = true;
+                        }
 
                         // fallback: head or jhead/title
-                        if name == b"head" { in_head = true; head_buf.clear(); }
+                        if name == b"head" {
+                            in_head = true;
+                            head_buf.clear();
+                        }
                         if name == b"title" {
                             if path_stack.iter().any(|n| n.as_slice() == b"jhead") {
-                                in_jhead_title = true; jhead_buf.clear();
+                                in_jhead_title = true;
+                                jhead_buf.clear();
                             }
                         }
                     }
                     Ok(Event::End(e)) => {
                         let name_owned = e.name().as_ref().to_owned();
                         let name = local_name(&name_owned);
-                        if name == b"title" { in_title = false; in_jhead_title = false; }
+                        if name == b"title" {
+                            in_title = false;
+                            in_jhead_title = false;
+                        }
                         if name == b"head" && in_head {
                             if fallback_title.is_none() {
                                 let t = head_buf.split_whitespace().collect::<Vec<_>>().join(" ");
-                                if !t.is_empty() { fallback_title = Some(t); }
+                                if !t.is_empty() {
+                                    fallback_title = Some(t);
+                                }
                             }
-                            in_head = false; head_buf.clear();
+                            in_head = false;
+                            head_buf.clear();
                         }
                         if name == b"teiHeader" {
                             // do not break; continue to allow fallback scanning in body if no title yet
                             // only early-stop if we already have a header title
-                            if title.is_some() { break; }
+                            if title.is_some() {
+                                break;
+                            }
                         }
                         path_stack.pop();
                     }
                     Ok(Event::Text(t)) => {
                         if in_title {
                             let t = t.decode().unwrap_or_default().into_owned();
-                            if !t.trim().is_empty() { title = Some(t); }
+                            if !t.trim().is_empty() {
+                                title = Some(t);
+                            }
                         }
                         // fallback buffers
                         let tx = t.decode().unwrap_or_default();
-                        if in_head { head_buf.push_str(&tx); }
-                        if in_jhead_title { jhead_buf.push_str(&tx); }
+                        if in_head {
+                            head_buf.push_str(&tx);
+                        }
+                        if in_jhead_title {
+                            jhead_buf.push_str(&tx);
+                        }
                     }
                     Ok(Event::Eof) => break,
                     Err(_) => break,
                     _ => {}
                 }
                 buf.clear();
-                if title.is_some() && id.is_some() { break; }
+                if title.is_some() && id.is_some() {
+                    break;
+                }
                 // consider jhead/title as candidate if not set yet
                 if fallback_title.is_none() && !jhead_buf.trim().is_empty() {
                     let t = jhead_buf.split_whitespace().collect::<Vec<_>>().join(" ");
-                    if !t.is_empty() { fallback_title = Some(t); }
+                    if !t.is_empty() {
+                        fallback_title = Some(t);
+                    }
                 }
             }
             let id = id.unwrap_or_else(|| stem_from(p));
@@ -159,7 +186,12 @@ pub fn build_index(root: &Path, glob_hint: Option<&str>) -> Vec<IndexEntry> {
                 .or(fallback_title)
                 .unwrap_or_else(|| stem_from(p));
             let abs = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
-            Some(IndexEntry { id, title, path: abs.to_string_lossy().to_string(), meta: None })
+            Some(IndexEntry {
+                id,
+                title,
+                path: abs.to_string_lossy().to_string(),
+                meta: None,
+            })
         })
         .collect()
 }
@@ -170,7 +202,9 @@ pub fn build_gretil_index(root: &Path) -> Vec<IndexEntry> {
     for e in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
         if e.file_type().is_file() {
             if let Some(name) = e.path().file_name().and_then(|s| s.to_str()) {
-                if name.ends_with(".xml") { paths.push(e.into_path()); }
+                if name.ends_with(".xml") {
+                    paths.push(e.into_path());
+                }
             }
         }
     }
@@ -184,9 +218,9 @@ pub fn build_gretil_index(root: &Path) -> Vec<IndexEntry> {
             reader.config_mut().trim_text_end = true;
             let mut buf = Vec::new();
 
-    let mut id: Option<String> = None;
-    let mut title_header: Option<String> = None;
-    let mut title_main: Option<String> = None;
+            let mut id: Option<String> = None;
+            let mut title_header: Option<String> = None;
+            let mut title_main: Option<String> = None;
             let mut author: Option<String> = None;
             let mut editor: Option<String> = None;
             let mut translator: Option<String> = None;
@@ -196,8 +230,8 @@ pub fn build_gretil_index(root: &Path) -> Vec<IndexEntry> {
             let mut heads: Vec<String> = Vec::new();
 
             let mut path_stack: Vec<Vec<u8>> = Vec::new();
-    let mut in_title_header = false;
-    let mut in_title_main = false;
+            let mut in_title_header = false;
+            let mut in_title_main = false;
             let mut in_author = false;
             let mut in_editor = false;
             let mut in_publisher = false;
@@ -223,78 +257,162 @@ pub fn build_gretil_index(root: &Path) -> Vec<IndexEntry> {
                         let name_owned = e.name().as_ref().to_owned();
                         let lname = local_name(&name_owned).to_vec();
                         if id.is_none() {
-                            if let Some(v) = attr_val(&e, b"xml:id") { id = Some(v.to_string()); }
+                            if let Some(v) = attr_val(&e, b"xml:id") {
+                                id = Some(v.to_string());
+                            }
                         }
                         path_stack.push(lname.clone());
 
                         // titleStmt/title
                         if lname.as_slice() == b"title" {
-                            if path_stack.iter().any(|n| n.as_slice() == b"titleStmt") && path_stack.iter().any(|n| n.as_slice() == b"teiHeader") {
+                            if path_stack.iter().any(|n| n.as_slice() == b"titleStmt")
+                                && path_stack.iter().any(|n| n.as_slice() == b"teiHeader")
+                            {
                                 in_title_header = true;
                                 // prefer type="main"
-                                if let Some(t) = attr_val(&e, b"type").map(|v| v.to_ascii_lowercase()) {
-                                    if t.contains("main") { in_title_main = true; }
+                                if let Some(t) =
+                                    attr_val(&e, b"type").map(|v| v.to_ascii_lowercase())
+                                {
+                                    if t.contains("main") {
+                                        in_title_main = true;
+                                    }
                                 }
                             }
                         }
-                        if lname.as_slice() == b"author" && path_stack.iter().any(|n| n.as_slice() == b"titleStmt") { in_author = true; }
-                        if lname.as_slice() == b"editor" && path_stack.iter().any(|n| n.as_slice() == b"titleStmt") { in_editor = true; }
-                        if lname.as_slice() == b"publisher" { in_publisher = true; }
-                        if lname.as_slice() == b"date" { in_date = true; }
-                        if lname.as_slice() == b"idno" { in_idno = true; }
-                        if lname.as_slice() == b"head" { in_head = true; head_buf.clear(); }
+                        if lname.as_slice() == b"author"
+                            && path_stack.iter().any(|n| n.as_slice() == b"titleStmt")
+                        {
+                            in_author = true;
+                        }
+                        if lname.as_slice() == b"editor"
+                            && path_stack.iter().any(|n| n.as_slice() == b"titleStmt")
+                        {
+                            in_editor = true;
+                        }
+                        if lname.as_slice() == b"publisher" {
+                            in_publisher = true;
+                        }
+                        if lname.as_slice() == b"date" {
+                            in_date = true;
+                        }
+                        if lname.as_slice() == b"idno" {
+                            in_idno = true;
+                        }
+                        if lname.as_slice() == b"head" {
+                            in_head = true;
+                            head_buf.clear();
+                        }
 
-                        if lname.as_slice() == b"respStmt" { in_resp_stmt = true; cur_resp_role.clear(); cur_resp_names.clear(); }
-                        if in_resp_stmt && lname.as_slice() == b"resp" { in_resp_role = true; }
-                        if in_resp_stmt && (lname.as_slice() == b"name" || lname.as_slice() == b"persName") { in_resp_name = true; }
+                        if lname.as_slice() == b"respStmt" {
+                            in_resp_stmt = true;
+                            cur_resp_role.clear();
+                            cur_resp_names.clear();
+                        }
+                        if in_resp_stmt && lname.as_slice() == b"resp" {
+                            in_resp_role = true;
+                        }
+                        if in_resp_stmt
+                            && (lname.as_slice() == b"name" || lname.as_slice() == b"persName")
+                        {
+                            in_resp_name = true;
+                        }
                     }
                     Ok(Event::End(e)) => {
                         let name_owned = e.name().as_ref().to_owned();
                         let lname = local_name(&name_owned);
-                        if lname == b"title" && in_title_header { in_title_header = false; in_title_main = false; }
-                        if lname == b"author" && in_author { in_author = false; }
-                        if lname == b"editor" && in_editor { in_editor = false; }
-                        if lname == b"publisher" && in_publisher { in_publisher = false; }
-                        if lname == b"date" && in_date { in_date = false; }
-                        if lname == b"idno" && in_idno { in_idno = false; }
+                        if lname == b"title" && in_title_header {
+                            in_title_header = false;
+                            in_title_main = false;
+                        }
+                        if lname == b"author" && in_author {
+                            in_author = false;
+                        }
+                        if lname == b"editor" && in_editor {
+                            in_editor = false;
+                        }
+                        if lname == b"publisher" && in_publisher {
+                            in_publisher = false;
+                        }
+                        if lname == b"date" && in_date {
+                            in_date = false;
+                        }
+                        if lname == b"idno" && in_idno {
+                            in_idno = false;
+                        }
                         if lname == b"head" && in_head {
                             let t = head_buf.split_whitespace().collect::<Vec<_>>().join(" ");
-                            if !t.is_empty() && heads.len() < 12 { heads.push(t); }
-                            in_head = false; head_buf.clear();
+                            if !t.is_empty() && heads.len() < 12 {
+                                heads.push(t);
+                            }
+                            in_head = false;
+                            head_buf.clear();
                         }
-                        if lname == b"resp" && in_resp_role { in_resp_role = false; }
-                        if (lname == b"name" || lname == b"persName") && in_resp_name { in_resp_name = false; }
+                        if lname == b"resp" && in_resp_role {
+                            in_resp_role = false;
+                        }
+                        if (lname == b"name" || lname == b"persName") && in_resp_name {
+                            in_resp_name = false;
+                        }
                         if lname == b"respStmt" && in_resp_stmt {
                             // 役割ベースで翻訳者を推測
                             let role = cur_resp_role.to_lowercase();
                             let names = cur_resp_names.join("・");
                             if translator.is_none() && !names.is_empty() {
-                                if role.contains("transl") || role.contains("translator") || role.contains("translation") || role.contains("trl") {
+                                if role.contains("transl")
+                                    || role.contains("translator")
+                                    || role.contains("translation")
+                                    || role.contains("trl")
+                                {
                                     translator = Some(names.clone());
                                 }
                             }
                             // respAll 収集
                             if !names.is_empty() {
-                                if role.is_empty() { resp_entries.push(names.clone()); }
-                                else { resp_entries.push(format!("{}: {}", role, names)); }
+                                if role.is_empty() {
+                                    resp_entries.push(names.clone());
+                                } else {
+                                    resp_entries.push(format!("{}: {}", role, names));
+                                }
                             }
-                            in_resp_stmt = false; cur_resp_role.clear(); cur_resp_names.clear();
+                            in_resp_stmt = false;
+                            cur_resp_role.clear();
+                            cur_resp_names.clear();
                         }
                         path_stack.pop();
                     }
                     Ok(Event::Text(t)) => {
                         let tx = t.decode().unwrap_or_default();
                         let s = tx.trim();
-                        if in_title_main && title_main.is_none() && !s.is_empty() { title_main = Some(s.to_string()); }
-                        if in_title_header && title_header.is_none() && !s.is_empty() { title_header = Some(s.to_string()); }
-                        if in_author && author.is_none() && !s.is_empty() { author = Some(s.to_string()); }
-                        if in_editor && editor.is_none() && !s.is_empty() { editor = Some(s.to_string()); }
-                        if in_publisher && publisher.is_none() && !s.is_empty() { publisher = Some(s.to_string()); }
-                        if in_date && date.is_none() && !s.is_empty() { date = Some(s.to_string()); }
-                        if in_idno && idno.is_none() && !s.is_empty() { idno = Some(s.to_string()); }
-                        if in_head { head_buf.push_str(&tx); }
-                        if in_resp_role { cur_resp_role.push_str(&tx); }
-                        if in_resp_name { cur_resp_names.push(s.to_string()); }
+                        if in_title_main && title_main.is_none() && !s.is_empty() {
+                            title_main = Some(s.to_string());
+                        }
+                        if in_title_header && title_header.is_none() && !s.is_empty() {
+                            title_header = Some(s.to_string());
+                        }
+                        if in_author && author.is_none() && !s.is_empty() {
+                            author = Some(s.to_string());
+                        }
+                        if in_editor && editor.is_none() && !s.is_empty() {
+                            editor = Some(s.to_string());
+                        }
+                        if in_publisher && publisher.is_none() && !s.is_empty() {
+                            publisher = Some(s.to_string());
+                        }
+                        if in_date && date.is_none() && !s.is_empty() {
+                            date = Some(s.to_string());
+                        }
+                        if in_idno && idno.is_none() && !s.is_empty() {
+                            idno = Some(s.to_string());
+                        }
+                        if in_head {
+                            head_buf.push_str(&tx);
+                        }
+                        if in_resp_role {
+                            cur_resp_role.push_str(&tx);
+                        }
+                        if in_resp_name {
+                            cur_resp_names.push(s.to_string());
+                        }
                     }
                     Ok(Event::Eof) => break,
                     Err(_) => break,
@@ -302,7 +420,9 @@ pub fn build_gretil_index(root: &Path) -> Vec<IndexEntry> {
                 }
                 buf.clear();
                 events += 1;
-                if events > max_events { break; }
+                if events > max_events {
+                    break;
+                }
             }
 
             let id = id.unwrap_or_else(|| stem_from(p));
@@ -312,17 +432,41 @@ pub fn build_gretil_index(root: &Path) -> Vec<IndexEntry> {
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| stem_from(p));
             // タイトルが過度に長い場合は先頭100字にトリム
-            if title.chars().count() > 120 { title = title.chars().take(120).collect::<String>(); }
+            if title.chars().count() > 120 {
+                title = title.chars().take(120).collect::<String>();
+            }
             let abs = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
 
             let mut meta_map: BTreeMap<String, String> = BTreeMap::new();
-            if let Some(v) = author { meta_map.insert("author".to_string(), v); }
-            if let Some(v) = editor { meta_map.insert("editor".to_string(), v); }
-            if let Some(v) = translator { meta_map.insert("translator".to_string(), v); }
-            if let Some(v) = publisher { meta_map.insert("publisher".to_string(), v); }
-            if let Some(v) = date { meta_map.insert("date".to_string(), v); }
-            if let Some(v) = idno { meta_map.insert("idno".to_string(), v); }
-            if !heads.is_empty() { meta_map.insert("headsPreview".to_string(), heads.iter().take(10).cloned().collect::<Vec<_>>().join(" | ")); }
+            if let Some(v) = author {
+                meta_map.insert("author".to_string(), v);
+            }
+            if let Some(v) = editor {
+                meta_map.insert("editor".to_string(), v);
+            }
+            if let Some(v) = translator {
+                meta_map.insert("translator".to_string(), v);
+            }
+            if let Some(v) = publisher {
+                meta_map.insert("publisher".to_string(), v);
+            }
+            if let Some(v) = date {
+                meta_map.insert("date".to_string(), v);
+            }
+            if let Some(v) = idno {
+                meta_map.insert("idno".to_string(), v);
+            }
+            if !heads.is_empty() {
+                meta_map.insert(
+                    "headsPreview".to_string(),
+                    heads
+                        .iter()
+                        .take(10)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(" | "),
+                );
+            }
 
             // keywords, classCode, catRef 抽出
             // 再パースはコストが高いので上の走査で拾うのが理想だが、簡潔に二段回で対応
@@ -331,32 +475,62 @@ pub fn build_gretil_index(root: &Path) -> Vec<IndexEntry> {
             reader2.config_mut().trim_text_start = true;
             reader2.config_mut().trim_text_end = true;
             let mut buf2 = Vec::new();
-            let mut in_keywords = false; let mut in_term = false; let mut terms: Vec<String> = Vec::new();
-            let mut in_classcode = false; let mut class_codes: Vec<String> = Vec::new();
+            let mut in_keywords = false;
+            let mut in_term = false;
+            let mut terms: Vec<String> = Vec::new();
+            let mut in_classcode = false;
+            let mut class_codes: Vec<String> = Vec::new();
             let mut cat_refs: Vec<String> = Vec::new();
             loop {
                 match reader2.read_event_into(&mut buf2) {
                     Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                         let name_owned = e.name().as_ref().to_owned();
                         let lname = local_name(&name_owned);
-                        if lname == b"keywords" { in_keywords = true; }
-                        if lname == b"term" && in_keywords { in_term = true; }
-                        if lname == b"classCode" { in_classcode = true; }
+                        if lname == b"keywords" {
+                            in_keywords = true;
+                        }
+                        if lname == b"term" && in_keywords {
+                            in_term = true;
+                        }
+                        if lname == b"classCode" {
+                            in_classcode = true;
+                        }
                         if lname == b"catRef" {
-                            if let Some(t) = attr_val(&e, b"target") { let v = t.trim().to_string(); if !v.is_empty() { cat_refs.push(v); } }
+                            if let Some(t) = attr_val(&e, b"target") {
+                                let v = t.trim().to_string();
+                                if !v.is_empty() {
+                                    cat_refs.push(v);
+                                }
+                            }
                         }
                     }
                     Ok(Event::End(e)) => {
                         let name_owned = e.name().as_ref().to_owned();
                         let lname = local_name(&name_owned);
-                        if lname == b"keywords" { in_keywords = false; }
-                        if lname == b"term" && in_keywords { in_term = false; }
-                        if lname == b"classCode" { in_classcode = false; }
+                        if lname == b"keywords" {
+                            in_keywords = false;
+                        }
+                        if lname == b"term" && in_keywords {
+                            in_term = false;
+                        }
+                        if lname == b"classCode" {
+                            in_classcode = false;
+                        }
                     }
                     Ok(Event::Text(t)) => {
                         let s = t.decode().unwrap_or_default();
-                        if in_term { let v = s.trim(); if !v.is_empty() { terms.push(v.to_string()); } }
-                        if in_classcode { let v = s.trim(); if !v.is_empty() { class_codes.push(v.to_string()); } }
+                        if in_term {
+                            let v = s.trim();
+                            if !v.is_empty() {
+                                terms.push(v.to_string());
+                            }
+                        }
+                        if in_classcode {
+                            let v = s.trim();
+                            if !v.is_empty() {
+                                class_codes.push(v.to_string());
+                            }
+                        }
                     }
                     Ok(Event::Eof) => break,
                     Err(_) => break,
@@ -364,12 +538,29 @@ pub fn build_gretil_index(root: &Path) -> Vec<IndexEntry> {
                 }
                 buf2.clear();
             }
-            if !terms.is_empty() { meta_map.insert("keywords".to_string(), terms.join(" | ")); }
-            if !class_codes.is_empty() { meta_map.insert("classCode".to_string(), class_codes.join(" | ")); }
-            if !cat_refs.is_empty() { meta_map.insert("catRef".to_string(), cat_refs.join(" | ")); }
-            if !resp_entries.is_empty() { meta_map.insert("respAll".to_string(), resp_entries.join(" | ")); }
+            if !terms.is_empty() {
+                meta_map.insert("keywords".to_string(), terms.join(" | "));
+            }
+            if !class_codes.is_empty() {
+                meta_map.insert("classCode".to_string(), class_codes.join(" | "));
+            }
+            if !cat_refs.is_empty() {
+                meta_map.insert("catRef".to_string(), cat_refs.join(" | "));
+            }
+            if !resp_entries.is_empty() {
+                meta_map.insert("respAll".to_string(), resp_entries.join(" | "));
+            }
 
-            Some(IndexEntry { id, title, path: abs.to_string_lossy().to_string(), meta: if meta_map.is_empty() { None } else { Some(meta_map) } })
+            Some(IndexEntry {
+                id,
+                title,
+                path: abs.to_string_lossy().to_string(),
+                meta: if meta_map.is_empty() {
+                    None
+                } else {
+                    Some(meta_map)
+                },
+            })
         })
         .collect()
 }
@@ -380,7 +571,9 @@ pub fn build_cbeta_index(root: &Path) -> Vec<IndexEntry> {
     for e in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
         if e.file_type().is_file() {
             if let Some(name) = e.path().file_name().and_then(|s| s.to_str()) {
-                if name.ends_with(".xml") { paths.push(e.into_path()); }
+                if name.ends_with(".xml") {
+                    paths.push(e.into_path());
+                }
             }
         }
     }
@@ -430,76 +623,154 @@ pub fn build_cbeta_index(root: &Path) -> Vec<IndexEntry> {
                         let name_owned = e.name().as_ref().to_owned();
                         let lname = local_name(&name_owned).to_vec();
                         if id.is_none() {
-                            if let Some(v) = attr_val(&e, b"xml:id") { id = Some(v.to_string()); }
+                            if let Some(v) = attr_val(&e, b"xml:id") {
+                                id = Some(v.to_string());
+                            }
                         }
                         path_stack.push(lname.clone());
 
                         if lname.as_slice() == b"title" {
-                            if path_stack.iter().any(|n| n.as_slice() == b"titleStmt") && path_stack.iter().any(|n| n.as_slice() == b"teiHeader") {
+                            if path_stack.iter().any(|n| n.as_slice() == b"titleStmt")
+                                && path_stack.iter().any(|n| n.as_slice() == b"teiHeader")
+                            {
                                 in_title_header = true;
                             }
                         }
-                        if lname.as_slice() == b"author" && path_stack.iter().any(|n| n.as_slice() == b"titleStmt") { in_author = true; }
-                        if lname.as_slice() == b"editor" && path_stack.iter().any(|n| n.as_slice() == b"titleStmt") { in_editor = true; }
-                        if lname.as_slice() == b"respStmt" { in_resp_stmt = true; cur_resp_role.clear(); cur_resp_names.clear(); }
-                        if in_resp_stmt && lname.as_slice() == b"resp" { in_resp_role = true; }
-                        if in_resp_stmt && (lname.as_slice() == b"name" || lname.as_slice() == b"persName") { in_resp_name = true; }
-                        if lname.as_slice() == b"publisher" { in_publisher = true; }
-                        if lname.as_slice() == b"date" { in_date = true; }
-                        if lname.as_slice() == b"idno" { in_idno = true; }
-                        if lname.as_slice() == b"head" { in_head = true; head_buf.clear(); }
+                        if lname.as_slice() == b"author"
+                            && path_stack.iter().any(|n| n.as_slice() == b"titleStmt")
+                        {
+                            in_author = true;
+                        }
+                        if lname.as_slice() == b"editor"
+                            && path_stack.iter().any(|n| n.as_slice() == b"titleStmt")
+                        {
+                            in_editor = true;
+                        }
+                        if lname.as_slice() == b"respStmt" {
+                            in_resp_stmt = true;
+                            cur_resp_role.clear();
+                            cur_resp_names.clear();
+                        }
+                        if in_resp_stmt && lname.as_slice() == b"resp" {
+                            in_resp_role = true;
+                        }
+                        if in_resp_stmt
+                            && (lname.as_slice() == b"name" || lname.as_slice() == b"persName")
+                        {
+                            in_resp_name = true;
+                        }
+                        if lname.as_slice() == b"publisher" {
+                            in_publisher = true;
+                        }
+                        if lname.as_slice() == b"date" {
+                            in_date = true;
+                        }
+                        if lname.as_slice() == b"idno" {
+                            in_idno = true;
+                        }
+                        if lname.as_slice() == b"head" {
+                            in_head = true;
+                            head_buf.clear();
+                        }
                         if lname.as_slice() == b"juan" {
                             let fun = attr_val(&e, b"fun").map(|v| v.to_ascii_lowercase());
-                            if fun.as_deref() == Some("open") || fun.is_none() { juan_count += 1; }
+                            if fun.as_deref() == Some("open") || fun.is_none() {
+                                juan_count += 1;
+                            }
                         }
                     }
                     Ok(Event::End(e)) => {
                         let name_owned = e.name().as_ref().to_owned();
                         let lname = local_name(&name_owned);
-                        if lname == b"title" && in_title_header { in_title_header = false; }
-                        if lname == b"author" && in_author { in_author = false; }
-                        if lname == b"editor" && in_editor { in_editor = false; }
-                        if lname == b"resp" && in_resp_role { in_resp_role = false; }
-                        if (lname == b"name" || lname == b"persName") && in_resp_name { in_resp_name = false; }
+                        if lname == b"title" && in_title_header {
+                            in_title_header = false;
+                        }
+                        if lname == b"author" && in_author {
+                            in_author = false;
+                        }
+                        if lname == b"editor" && in_editor {
+                            in_editor = false;
+                        }
+                        if lname == b"resp" && in_resp_role {
+                            in_resp_role = false;
+                        }
+                        if (lname == b"name" || lname == b"persName") && in_resp_name {
+                            in_resp_name = false;
+                        }
                         if lname == b"respStmt" && in_resp_stmt {
                             // finalize current respStmt entry
                             let names_join = cur_resp_names.join("・");
                             let entry = if !cur_resp_role.trim().is_empty() {
                                 format!("{}: {}", cur_resp_role.trim(), names_join)
-                            } else { names_join };
-                            if !entry.trim().is_empty() { resp_entries.push(entry); }
+                            } else {
+                                names_join
+                            };
+                            if !entry.trim().is_empty() {
+                                resp_entries.push(entry);
+                            }
                             in_resp_stmt = false;
-                            cur_resp_role.clear(); cur_resp_names.clear();
+                            cur_resp_role.clear();
+                            cur_resp_names.clear();
                         }
-                        if lname == b"publisher" && in_publisher { in_publisher = false; }
-                        if lname == b"date" && in_date { in_date = false; }
-                        if lname == b"idno" && in_idno { in_idno = false; }
+                        if lname == b"publisher" && in_publisher {
+                            in_publisher = false;
+                        }
+                        if lname == b"date" && in_date {
+                            in_date = false;
+                        }
+                        if lname == b"idno" && in_idno {
+                            in_idno = false;
+                        }
                         if lname == b"head" && in_head {
                             let t = head_buf.split_whitespace().collect::<Vec<_>>().join(" ");
-                            if !t.is_empty() && heads.len() < 12 { heads.push(t); }
-                            in_head = false; head_buf.clear();
+                            if !t.is_empty() && heads.len() < 12 {
+                                heads.push(t);
+                            }
+                            in_head = false;
+                            head_buf.clear();
                         }
                         path_stack.pop();
                     }
                     Ok(Event::Text(t)) => {
                         let tx = t.decode().unwrap_or_default();
                         let s = tx.to_string();
-                        if in_title_header && title_header.is_none() && !s.trim().is_empty() { title_header = Some(s.clone()); }
-                        if in_author && author.is_none() && !s.trim().is_empty() { author = Some(s.clone()); }
-                        if in_editor && editor.is_none() && !s.trim().is_empty() { editor = Some(s.clone()); }
-                        if in_resp_role && !s.trim().is_empty() { cur_resp_role.push_str(&s); }
-                        if in_resp_name && !s.trim().is_empty() { cur_resp_names.push(s.clone()); }
-                        if in_publisher && publisher.is_none() && !s.trim().is_empty() { publisher = Some(s.clone()); }
-                        if in_date && pubdate.is_none() && !s.trim().is_empty() { pubdate = Some(s.clone()); }
-                        if in_idno && idno.is_none() && !s.trim().is_empty() { idno = Some(s.clone()); }
-                        if in_head { head_buf.push_str(&s); }
+                        if in_title_header && title_header.is_none() && !s.trim().is_empty() {
+                            title_header = Some(s.clone());
+                        }
+                        if in_author && author.is_none() && !s.trim().is_empty() {
+                            author = Some(s.clone());
+                        }
+                        if in_editor && editor.is_none() && !s.trim().is_empty() {
+                            editor = Some(s.clone());
+                        }
+                        if in_resp_role && !s.trim().is_empty() {
+                            cur_resp_role.push_str(&s);
+                        }
+                        if in_resp_name && !s.trim().is_empty() {
+                            cur_resp_names.push(s.clone());
+                        }
+                        if in_publisher && publisher.is_none() && !s.trim().is_empty() {
+                            publisher = Some(s.clone());
+                        }
+                        if in_date && pubdate.is_none() && !s.trim().is_empty() {
+                            pubdate = Some(s.clone());
+                        }
+                        if in_idno && idno.is_none() && !s.trim().is_empty() {
+                            idno = Some(s.clone());
+                        }
+                        if in_head {
+                            head_buf.push_str(&s);
+                        }
                     }
                     Ok(Event::Eof) => break,
                     Err(_) => break,
                     _ => {}
                 }
                 buf.clear();
-                events += 1; if events > max_events { break; }
+                events += 1;
+                if events > max_events {
+                    break;
+                }
             }
 
             let id = id.unwrap_or_else(|| stem_from(p));
@@ -508,45 +779,97 @@ pub fn build_cbeta_index(root: &Path) -> Vec<IndexEntry> {
                 .unwrap_or_else(|| stem_from(p));
             let abs = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
 
-            let canon = abs.parent()
+            let canon = abs
+                .parent()
                 .and_then(|pp| pp.strip_prefix(root).ok())
                 .and_then(|rel| rel.components().next())
                 .map(|c| c.as_os_str().to_string_lossy().to_string())
                 .unwrap_or_default();
 
-            let fname = abs.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+            let fname = abs
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
             let mut nnum: Option<String> = None;
             if let Some(pos) = fname.to_lowercase().find('n') {
-                let digits: String = fname[pos+1..].chars().take_while(|c| c.is_ascii_digit()).collect();
-                if !digits.is_empty() { nnum = Some(digits); }
+                let digits: String = fname[pos + 1..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect();
+                if !digits.is_empty() {
+                    nnum = Some(digits);
+                }
             }
 
             let mut meta = BTreeMap::new();
-            if !canon.is_empty() { meta.insert("canon".to_string(), canon); }
-            if let Some(a) = author { meta.insert("author".to_string(), a); }
-            if let Some(ed) = editor { meta.insert("editor".to_string(), ed); }
-            if !resp_entries.is_empty() { meta.insert("respAll".to_string(), resp_entries.join(" | ")); }
+            if !canon.is_empty() {
+                meta.insert("canon".to_string(), canon);
+            }
+            if let Some(a) = author {
+                meta.insert("author".to_string(), a);
+            }
+            if let Some(ed) = editor {
+                meta.insert("editor".to_string(), ed);
+            }
+            if !resp_entries.is_empty() {
+                meta.insert("respAll".to_string(), resp_entries.join(" | "));
+            }
             // try to extract translators from resp entries
             if !resp_entries.is_empty() {
                 let mut translators: Vec<String> = Vec::new();
                 for e in resp_entries.iter() {
                     let low = e.to_lowercase();
-                    if low.contains("譯") || low.contains("译") || low.contains("translat") || low.contains("tr.") {
+                    if low.contains("譯")
+                        || low.contains("译")
+                        || low.contains("translat")
+                        || low.contains("tr.")
+                    {
                         // extract part after ':' if any
-                        if let Some(pos) = e.find(':') { translators.push(e[pos+1..].trim().to_string()); }
-                        else { translators.push(e.clone()); }
+                        if let Some(pos) = e.find(':') {
+                            translators.push(e[pos + 1..].trim().to_string());
+                        } else {
+                            translators.push(e.clone());
+                        }
                     }
                 }
-                if !translators.is_empty() { meta.insert("translator".to_string(), translators.join("・")); }
+                if !translators.is_empty() {
+                    meta.insert("translator".to_string(), translators.join("・"));
+                }
             }
-            if let Some(pu) = publisher { meta.insert("publisher".to_string(), pu); }
-            if let Some(pd) = pubdate { meta.insert("date".to_string(), pd); }
-            if let Some(i) = idno { meta.insert("idno".to_string(), i); }
-            if let Some(nn) = nnum { meta.insert("nnum".to_string(), nn); }
-            if juan_count > 0 { meta.insert("juanCount".to_string(), juan_count.to_string()); }
-            if !heads.is_empty() { meta.insert("headsPreview".to_string(), heads.iter().take(10).cloned().collect::<Vec<_>>().join(" | ")); }
+            if let Some(pu) = publisher {
+                meta.insert("publisher".to_string(), pu);
+            }
+            if let Some(pd) = pubdate {
+                meta.insert("date".to_string(), pd);
+            }
+            if let Some(i) = idno {
+                meta.insert("idno".to_string(), i);
+            }
+            if let Some(nn) = nnum {
+                meta.insert("nnum".to_string(), nn);
+            }
+            if juan_count > 0 {
+                meta.insert("juanCount".to_string(), juan_count.to_string());
+            }
+            if !heads.is_empty() {
+                meta.insert(
+                    "headsPreview".to_string(),
+                    heads
+                        .iter()
+                        .take(10)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(" | "),
+                );
+            }
 
-            Some(IndexEntry { id, title, path: abs.to_string_lossy().to_string(), meta: if meta.is_empty() { None } else { Some(meta) } })
+            Some(IndexEntry {
+                id,
+                title,
+                path: abs.to_string_lossy().to_string(),
+                meta: if meta.is_empty() { None } else { Some(meta) },
+            })
         })
         .collect()
 }
@@ -585,7 +908,7 @@ pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
                             _ => return None,
                         }
                     } else if bytes.starts_with(&[0xFE, 0xFF]) {
-                        // UTF-16 BE  
+                        // UTF-16 BE
                         match encoding_rs::UTF_16BE.decode(&bytes) {
                             (decoded, _, false) => decoded.into_owned(),
                             _ => return None,
@@ -597,15 +920,15 @@ pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
                             Err(_) => return None,
                         }
                     }
-                },
+                }
                 Err(_) => return None,
             };
-            
+
             let mut reader = Reader::from_str(&content);
             reader.config_mut().trim_text_start = true;
             reader.config_mut().trim_text_end = true;
             let mut buf = Vec::new();
-            
+
             // より正確な構造解析のための変数
             let mut in_p = false;
             let mut in_head = false;
@@ -613,12 +936,13 @@ pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
             let mut current_rend: Option<String> = None;
             let mut current_buf = String::new();
             let mut head_buf = String::new();
-            
+
             // 構造化データの収集
-            let mut fields: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+            let mut fields: std::collections::HashMap<String, Vec<String>> =
+                std::collections::HashMap::new();
             let mut heads: Vec<String> = Vec::new();
             let mut div_info: Vec<(String, String)> = Vec::new(); // (n, type) pairs
-            
+
             // 対象キー（拡張） - gathalastも含める
             let wanted_p = ["nikaya", "title", "subhead", "subsubhead", "gathalast"];
             let wanted_head = ["book", "chapter"];
@@ -630,7 +954,7 @@ pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
                     Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                         let name_owned = e.name().as_ref().to_owned();
                         let name = local_name(&name_owned);
-                        
+
                         if name == b"p" {
                             in_p = true;
                             current_buf.clear();
@@ -641,7 +965,9 @@ pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
                             current_rend = attr_val(&e, b"rend").map(|v| v.to_ascii_lowercase());
                         } else if name == b"div" {
                             // div要素の属性を記録
-                            if let (Some(n), Some(type_val)) = (attr_val(&e, b"n"), attr_val(&e, b"type")) {
+                            if let (Some(n), Some(type_val)) =
+                                (attr_val(&e, b"n"), attr_val(&e, b"type"))
+                            {
                                 div_info.push((n.to_string(), type_val.to_string()));
                             }
                         }
@@ -649,7 +975,7 @@ pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
                     Ok(Event::End(e)) => {
                         let name_owned = e.name().as_ref().to_owned();
                         let name = local_name(&name_owned);
-                        
+
                         if name == b"p" && in_p {
                             if let Some(rend) = current_rend.take() {
                                 let key = rend.trim().to_string();
@@ -665,7 +991,7 @@ pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
                             in_p = false;
                             current_buf.clear();
                         }
-                        
+
                         if name == b"head" && in_head {
                             if let Some(rend) = current_rend.take() {
                                 let key = rend.trim().to_string();
@@ -679,18 +1005,18 @@ pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
                                         }
                                     }
                                     // 全てのheadを一般コレクションにも追加（重複チェック）
-                                    if heads.len() < 15 && !heads.contains(&val) { 
-                                        heads.push(val); 
+                                    if heads.len() < 15 && !heads.contains(&val) {
+                                        heads.push(val);
                                     }
                                 }
                             } else {
                                 // rendなしのheadも収集（重複チェック）
                                 let t = head_buf.split_whitespace().collect::<Vec<_>>().join(" ");
-                                if !t.is_empty() && heads.len() < 15 && !heads.contains(&t) { 
-                                    heads.push(t); 
+                                if !t.is_empty() && heads.len() < 15 && !heads.contains(&t) {
+                                    heads.push(t);
                                 }
                             }
-                            in_head = false; 
+                            in_head = false;
                             head_buf.clear();
                         }
                     }
@@ -709,29 +1035,43 @@ pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
                 }
                 buf.clear();
                 events_read += 1;
-                if events_read > max_events { break; }
+                if events_read > max_events {
+                    break;
+                }
             }
 
             // タイトル組み立て: 階層順序に従って構築
-            let parts_order = ["nikaya", "book", "title", "subhead", "subsubhead", "chapter", "gathalast"]; 
+            let parts_order = [
+                "nikaya",
+                "book",
+                "title",
+                "subhead",
+                "subsubhead",
+                "chapter",
+                "gathalast",
+            ];
             let mut parts: Vec<String> = Vec::new();
             for k in parts_order.iter() {
                 if let Some(values) = fields.get(*k) {
                     // 複数値がある場合は最初の値を使用（タイトル構築用）
                     if let Some(first_val) = values.first() {
-                        if !first_val.trim().is_empty() { 
-                            parts.push(first_val.trim().to_string()); 
+                        if !first_val.trim().is_empty() {
+                            parts.push(first_val.trim().to_string());
                         }
                     }
                 }
             }
-            let title = if parts.is_empty() { stem_from(p) } else { parts.join(" · ") };
+            let title = if parts.is_empty() {
+                stem_from(p)
+            } else {
+                parts.join(" · ")
+            };
             let id = stem_from(p);
             let abs = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
-            
+
             // メタデータの構築
             let mut meta_map: BTreeMap<String, String> = BTreeMap::new();
-            
+
             // フィールド値をメタデータに格納
             for (key, values) in fields.iter() {
                 if values.len() == 1 {
@@ -746,7 +1086,7 @@ pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
                     }
                 }
             }
-            
+
             // div情報をメタデータに追加
             if !div_info.is_empty() {
                 let mut div_sections: Vec<String> = Vec::new();
@@ -762,18 +1102,33 @@ pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
             let nikaya_fold = meta_map.get("nikaya").map(|s| fold_ascii(s));
             let mut alias_prefix: Option<&'static str> = None;
             if let Some(nf) = &nikaya_fold {
-                if nf.contains("digha") { alias_prefix = Some("DN"); }
-                else if nf.contains("majjhima") { alias_prefix = Some("MN"); }
-                else if nf.contains("samyutta") || nf.contains("saṃyutta") || nf.contains("samyutta") { alias_prefix = Some("SN"); }
-                else if nf.contains("anguttara") || nf.contains("agguttara") || nf.contains("aṅguttara") { alias_prefix = Some("AN"); }
-                else if nf.contains("khuddaka") { alias_prefix = Some("KN"); }
+                if nf.contains("digha") {
+                    alias_prefix = Some("DN");
+                } else if nf.contains("majjhima") {
+                    alias_prefix = Some("MN");
+                } else if nf.contains("samyutta")
+                    || nf.contains("saṃyutta")
+                    || nf.contains("samyutta")
+                {
+                    alias_prefix = Some("SN");
+                } else if nf.contains("anguttara")
+                    || nf.contains("agguttara")
+                    || nf.contains("aṅguttara")
+                {
+                    alias_prefix = Some("AN");
+                } else if nf.contains("khuddaka") {
+                    alias_prefix = Some("KN");
+                }
             }
             if let Some(prefix) = alias_prefix {
                 // try to find a number from book/title/subhead/chapter
                 let mut num_str: Option<String> = None;
-                for k in ["book","title","subhead","subsubhead","chapter"].iter() {
+                for k in ["book", "title", "subhead", "subsubhead", "chapter"].iter() {
                     if let Some(v) = meta_map.get(*k) {
-                        if let Some(ns) = first_number(v) { num_str = Some(ns); break; }
+                        if let Some(ns) = first_number(v) {
+                            num_str = Some(ns);
+                            break;
+                        }
                     }
                 }
                 let mut aliases: Vec<String> = Vec::new();
@@ -792,15 +1147,18 @@ pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
                         format!("{} {:0>2}", prefix, ns),
                         format!("{} {:0>3}", prefix, ns),
                     ];
-                    for f in forms { aliases.push(f.clone()); aliases.push(f.to_lowercase()); }
+                    for f in forms {
+                        aliases.push(f.clone());
+                        aliases.push(f.to_lowercase());
+                    }
                     // roman numeral variant
                     if let Ok(n) = n_trim.parse::<usize>() {
                         let r = roman_upper(n);
-                        let forms_r = vec![
-                            format!("{} {}", prefix, r),
-                            format!("{}{}", prefix, r),
-                        ];
-                        for f in forms_r { aliases.push(f.clone()); aliases.push(f.to_lowercase()); }
+                        let forms_r = vec![format!("{} {}", prefix, r), format!("{}{}", prefix, r)];
+                        for f in forms_r {
+                            aliases.push(f.clone());
+                            aliases.push(f.to_lowercase());
+                        }
                     }
                 }
                 // Composite alias for SN/AN like "SN 12.2"
@@ -816,7 +1174,10 @@ pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
                             format!("{} {:0>2}.{:0>2}", prefix, a, b),
                             format!("{}{:0>2}.{:0>2}", prefix, a, b),
                         ];
-                        for f in forms { aliases.push(f.clone()); aliases.push(f.to_lowercase()); }
+                        for f in forms {
+                            aliases.push(f.clone());
+                            aliases.push(f.to_lowercase());
+                        }
                         // Roman for first component optionally
                         if let Ok(na) = a_trim.parse::<usize>() {
                             let ra = roman_upper(na);
@@ -824,7 +1185,10 @@ pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
                                 format!("{} {}.{}", prefix, ra, b_trim),
                                 format!("{}{}.{}", prefix, ra, b_trim),
                             ];
-                            for f in forms_r { aliases.push(f.clone()); aliases.push(f.to_lowercase()); }
+                            for f in forms_r {
+                                aliases.push(f.clone());
+                                aliases.push(f.to_lowercase());
+                            }
                         }
                     }
                 }
@@ -832,7 +1196,15 @@ pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
                 meta_map.insert("alias_prefix".to_string(), prefix.to_string());
             }
             if !heads.is_empty() {
-                meta_map.insert("headsPreview".to_string(), heads.iter().take(10).cloned().collect::<Vec<_>>().join(" | "));
+                meta_map.insert(
+                    "headsPreview".to_string(),
+                    heads
+                        .iter()
+                        .take(10)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(" | "),
+                );
                 // add alias variants from heads and title
                 let mut alias_ext: Vec<String> = Vec::new();
                 for s in heads.iter().take(6) {
@@ -841,64 +1213,119 @@ pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
                 alias_ext.extend(pali_title_variants(&title));
                 if !alias_ext.is_empty() {
                     let prev = meta_map.remove("alias").unwrap_or_default();
-                    let combined = if prev.is_empty() { alias_ext.join(" ") } else { format!("{} {}", prev, alias_ext.join(" ")) };
+                    let combined = if prev.is_empty() {
+                        alias_ext.join(" ")
+                    } else {
+                        format!("{} {}", prev, alias_ext.join(" "))
+                    };
                     meta_map.insert("alias".to_string(), combined);
                 }
             }
-            let meta = if meta_map.is_empty() { None } else { Some(meta_map) };
-            Some(IndexEntry { id, title, path: abs.to_string_lossy().to_string(), meta })
+            let meta = if meta_map.is_empty() {
+                None
+            } else {
+                Some(meta_map)
+            };
+            Some(IndexEntry {
+                id,
+                title,
+                path: abs.to_string_lossy().to_string(),
+                meta,
+            })
         })
         .collect()
 }
 
 fn fold_ascii(s: &str) -> String {
     let t: String = s.nfkd().collect::<String>().to_lowercase();
-    t.chars().filter(|c| c.is_alphanumeric() || c.is_whitespace()).collect()
+    t.chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+        .collect()
 }
 
 fn first_number(s: &str) -> Option<String> {
     let mut out = String::new();
     for ch in s.chars() {
-        if ch.is_ascii_digit() { out.push(ch); }
-        else if !out.is_empty() { break; }
+        if ch.is_ascii_digit() {
+            out.push(ch);
+        } else if !out.is_empty() {
+            break;
+        }
     }
-    if out.is_empty() { None } else { Some(out) }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 fn roman_upper(mut n: usize) -> String {
     // simple roman numeral converter (1..3999)
-    if n == 0 || n > 3999 { return n.to_string(); }
+    if n == 0 || n > 3999 {
+        return n.to_string();
+    }
     let mut out = String::new();
-    let vals = [(1000,"M"),(900,"CM"),(500,"D"),(400,"CD"),(100,"C"),(90,"XC"),(50,"L"),(40,"XL"),(10,"X"),(9,"IX"),(5,"V"),(4,"IV"),(1,"I")];
+    let vals = [
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
+    ];
     for (v, s) in vals.iter() {
-        while n >= *v { out.push_str(s); n -= *v; }
+        while n >= *v {
+            out.push_str(s);
+            n -= *v;
+        }
     }
     out
 }
 
 fn first_two_numbers_from_meta(meta: &BTreeMap<String, String>) -> Option<(String, String)> {
     let mut nums: Vec<String> = Vec::new();
-    for k in ["book","title","subhead","subsubhead","chapter"].iter() {
+    for k in ["book", "title", "subhead", "subsubhead", "chapter"].iter() {
         if let Some(v) = meta.get(*k) {
             let mut cur = String::new();
             for ch in v.chars() {
-                if ch.is_ascii_digit() { cur.push(ch); }
-                else {
-                    if !cur.is_empty() { nums.push(cur.clone()); cur.clear(); }
+                if ch.is_ascii_digit() {
+                    cur.push(ch);
+                } else {
+                    if !cur.is_empty() {
+                        nums.push(cur.clone());
+                        cur.clear();
+                    }
                 }
             }
-            if !cur.is_empty() { nums.push(cur); }
-            if nums.len() >= 2 { break; }
+            if !cur.is_empty() {
+                nums.push(cur);
+            }
+            if nums.len() >= 2 {
+                break;
+            }
         }
     }
-    if nums.len() >= 2 { Some((nums[0].clone(), nums[1].clone())) } else { None }
+    if nums.len() >= 2 {
+        Some((nums[0].clone(), nums[1].clone()))
+    } else {
+        None
+    }
 }
 
 fn pali_title_variants(s: &str) -> Vec<String> {
     // generate normalized and ascii-vowel-doubling variants to help search recall
     let mut out: Vec<String> = Vec::new();
     let base = s.trim();
-    if base.is_empty() { return out; }
+    if base.is_empty() {
+        return out;
+    }
     // plain
     out.push(base.to_string());
     // folded ascii (remove diacritics)
@@ -919,7 +1346,11 @@ fn pali_title_variants(s: &str) -> Vec<String> {
             'ṃ' | 'Ṃ' | 'ṁ' | 'Ṁ' => Some("m"),
             _ => None,
         };
-        if let Some(r) = repl { dbl.push_str(r); } else { dbl.push(ch); }
+        if let Some(r) = repl {
+            dbl.push_str(r);
+        } else {
+            dbl.push(ch);
+        }
     }
     out.push(dbl.to_lowercase());
     // also common keyword expansions
@@ -950,8 +1381,9 @@ fn parse_gaiji_map(xml: &str) -> HashMap<String, String> {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                 let name_owned = e.name().as_ref().to_owned();
                 let name = local_name(&name_owned);
-                if name == b"charDecl" { in_chardecl = true; }
-                else if in_chardecl && name == b"char" {
+                if name == b"charDecl" {
+                    in_chardecl = true;
+                } else if in_chardecl && name == b"char" {
                     in_char = true;
                     current_id = attr_val(&e, b"xml:id").map(|v| v.to_string());
                     current_val = None;
@@ -966,12 +1398,20 @@ fn parse_gaiji_map(xml: &str) -> HashMap<String, String> {
             Ok(Event::End(e)) => {
                 let name_owned = e.name().as_ref().to_owned();
                 let name = local_name(&name_owned);
-                if name == b"charDecl" { in_chardecl = false; }
-                if name == b"mapping" { in_mapping = false; }
-                if name == b"charName" { in_charname = false; }
+                if name == b"charDecl" {
+                    in_chardecl = false;
+                }
+                if name == b"mapping" {
+                    in_mapping = false;
+                }
+                if name == b"charName" {
+                    in_charname = false;
+                }
                 if name == b"char" && in_char {
                     if let (Some(id), Some(v)) = (current_id.clone(), current_val.clone()) {
-                        if !v.is_empty() { map.insert(id, v); }
+                        if !v.is_empty() {
+                            map.insert(id, v);
+                        }
                     }
                     in_char = false;
                     current_id = None;
@@ -982,11 +1422,18 @@ fn parse_gaiji_map(xml: &str) -> HashMap<String, String> {
             Ok(Event::Text(t)) => {
                 let text = t.decode().unwrap_or_default().into_owned();
                 if in_char && in_mapping && current_mapping_type.as_deref() == Some("unicode") {
-                    if !text.trim().is_empty() { current_val = Some(text); }
-                } else if in_char && in_mapping && current_mapping_type.as_deref() == Some("normal") {
-                    if current_val.is_none() && !text.trim().is_empty() { current_val = Some(text); }
+                    if !text.trim().is_empty() {
+                        current_val = Some(text);
+                    }
+                } else if in_char && in_mapping && current_mapping_type.as_deref() == Some("normal")
+                {
+                    if current_val.is_none() && !text.trim().is_empty() {
+                        current_val = Some(text);
+                    }
                 } else if in_char && in_charname {
-                    if current_val.is_none() && !text.trim().is_empty() { current_val = Some(text); }
+                    if current_val.is_none() && !text.trim().is_empty() {
+                        current_val = Some(text);
+                    }
                 }
             }
             Ok(Event::Eof) => break,
@@ -1023,14 +1470,21 @@ pub fn extract_text_opts(xml: &str, include_notes: bool) -> String {
                         skip_depth = 1;
                     }
                 } else if name == b"lb" {
-                    if skip_depth == 0 && !collect_note { out.push('\n'); }
+                    if skip_depth == 0 && !collect_note {
+                        out.push('\n');
+                    }
                 } else if name == b"pb" {
-                    if skip_depth == 0 && !collect_note { out.push('\n'); out.push('\n'); }
+                    if skip_depth == 0 && !collect_note {
+                        out.push('\n');
+                        out.push('\n');
+                    }
                 } else if name == b"g" {
                     if skip_depth == 0 {
                         if let Some(r) = attr_val(&e, b"ref") {
                             let key = r.trim_start_matches('#').to_string();
-                            if let Some(v) = gaiji.get(&key) { out.push_str(v); }
+                            if let Some(v) = gaiji.get(&key) {
+                                out.push_str(v);
+                            }
                         }
                     }
                 }
@@ -1039,14 +1493,21 @@ pub fn extract_text_opts(xml: &str, include_notes: bool) -> String {
                 let name_owned = e.name().as_ref().to_owned();
                 let name = local_name(&name_owned);
                 if name == b"lb" {
-                    if skip_depth == 0 && !collect_note { out.push('\n'); }
+                    if skip_depth == 0 && !collect_note {
+                        out.push('\n');
+                    }
                 } else if name == b"pb" {
-                    if skip_depth == 0 && !collect_note { out.push('\n'); out.push('\n'); }
+                    if skip_depth == 0 && !collect_note {
+                        out.push('\n');
+                        out.push('\n');
+                    }
                 } else if name == b"g" {
                     if skip_depth == 0 {
                         if let Some(r) = attr_val(&e, b"ref") {
                             let key = r.trim_start_matches('#').to_string();
-                            if let Some(v) = gaiji.get(&key) { out.push_str(v); }
+                            if let Some(v) = gaiji.get(&key) {
+                                out.push_str(v);
+                            }
                         }
                     }
                 } else if name == b"note" {
@@ -1060,18 +1521,28 @@ pub fn extract_text_opts(xml: &str, include_notes: bool) -> String {
                 let name_owned = e.name().as_ref().to_owned();
                 let name = local_name(&name_owned);
                 if name == b"note" {
-                    if skip_depth > 0 { if skip_depth > 0 { skip_depth -= 1; } }
+                    if skip_depth > 0 {
+                        if skip_depth > 0 {
+                            skip_depth -= 1;
+                        }
+                    }
                     if collect_note {
                         note_depth = note_depth.saturating_sub(1);
                         if note_depth == 0 {
                             let t = note_buf.split_whitespace().collect::<Vec<_>>().join(" ");
-                            if !t.is_empty() { out.push_str(" [注] "); out.push_str(&t); out.push(' '); }
+                            if !t.is_empty() {
+                                out.push_str(" [注] ");
+                                out.push_str(&t);
+                                out.push(' ');
+                            }
                             collect_note = false;
                             note_buf.clear();
                         }
                     }
                 } else if collect_note {
-                    if note_depth > 0 { note_depth -= 1; }
+                    if note_depth > 0 {
+                        note_depth -= 1;
+                    }
                 } else if skip_depth > 0 {
                     skip_depth -= 1;
                 }
@@ -1086,7 +1557,11 @@ pub fn extract_text_opts(xml: &str, include_notes: bool) -> String {
             }
             Ok(Event::CData(t)) => {
                 let text = String::from_utf8_lossy(&t).into_owned();
-                if collect_note { note_buf.push_str(&text); } else if skip_depth == 0 { out.push_str(&text); }
+                if collect_note {
+                    note_buf.push_str(&text);
+                } else if skip_depth == 0 {
+                    out.push_str(&text);
+                }
             }
             Ok(Event::Eof) => break,
             Err(_) => break,
@@ -1116,7 +1591,9 @@ pub fn extract_cbeta_juan(xml: &str, part: &str) -> Option<String> {
                     let fun = attr_val(&e, b"fun").map(|v| v.to_ascii_lowercase());
                     let n = attr_val(&e, b"n").unwrap_or(Cow::Borrowed(""));
                     if !capturing {
-                        if (n == target_n1 || n == target_n2) && (fun.as_deref() == Some("open") || fun.is_none()) {
+                        if (n == target_n1 || n == target_n2)
+                            && (fun.as_deref() == Some("open") || fun.is_none())
+                        {
                             capturing = true;
                         }
                     } else {
@@ -1125,22 +1602,31 @@ pub fn extract_cbeta_juan(xml: &str, part: &str) -> Option<String> {
                         }
                     }
                 } else if capturing {
-                    if name == b"lb" { out.push('\n'); }
-                    else if name == b"pb" { out.push('\n'); out.push('\n'); }
-                    else if name == b"g" {
+                    if name == b"lb" {
+                        out.push('\n');
+                    } else if name == b"pb" {
+                        out.push('\n');
+                        out.push('\n');
+                    } else if name == b"g" {
                         if let Some(r) = attr_val(&e, b"ref") {
                             let key = r.trim_start_matches('#').to_string();
-                            if let Some(v) = gaiji.get(&key) { out.push_str(v); }
+                            if let Some(v) = gaiji.get(&key) {
+                                out.push_str(v);
+                            }
                         }
                     }
                 }
             }
             Ok(Event::End(_)) => {}
             Ok(Event::Text(t)) => {
-                if capturing { out.push_str(&t.decode().unwrap_or_default()); }
+                if capturing {
+                    out.push_str(&t.decode().unwrap_or_default());
+                }
             }
             Ok(Event::CData(t)) => {
-                if capturing { out.push_str(&String::from_utf8_lossy(&t)); }
+                if capturing {
+                    out.push_str(&String::from_utf8_lossy(&t));
+                }
             }
             Ok(Event::Eof) => break,
             Err(_) => break,
@@ -1148,7 +1634,11 @@ pub fn extract_cbeta_juan(xml: &str, part: &str) -> Option<String> {
         }
         buf.clear();
     }
-    if out.is_empty() { None } else { Some(out.split_whitespace().collect::<Vec<_>>().join(" ")) }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out.split_whitespace().collect::<Vec<_>>().join(" "))
+    }
 }
 
 pub fn list_heads_cbeta(xml: &str) -> Vec<String> {
@@ -1169,11 +1659,13 @@ pub fn list_heads_cbeta(xml: &str) -> Vec<String> {
                 let lname = local_name(&name_owned).to_vec();
                 path_stack.push(lname.clone());
                 if lname.as_slice() == b"head" {
-                    in_head = true; head_buf.clear();
+                    in_head = true;
+                    head_buf.clear();
                 }
                 if lname.as_slice() == b"title" {
                     if path_stack.iter().any(|n| n.as_slice() == b"jhead") {
-                        in_jhead_title = true; jhead_buf.clear();
+                        in_jhead_title = true;
+                        jhead_buf.clear();
                     }
                 }
             }
@@ -1182,20 +1674,30 @@ pub fn list_heads_cbeta(xml: &str) -> Vec<String> {
                 let lname = local_name(&name_owned);
                 if lname == b"head" && in_head {
                     let t = head_buf.split_whitespace().collect::<Vec<_>>().join(" ");
-                    if !t.is_empty() { heads.push(t); }
-                    in_head = false; head_buf.clear();
+                    if !t.is_empty() {
+                        heads.push(t);
+                    }
+                    in_head = false;
+                    head_buf.clear();
                 }
                 if lname == b"title" && in_jhead_title {
                     let t = jhead_buf.split_whitespace().collect::<Vec<_>>().join(" ");
-                    if !t.is_empty() { heads.push(t); }
-                    in_jhead_title = false; jhead_buf.clear();
+                    if !t.is_empty() {
+                        heads.push(t);
+                    }
+                    in_jhead_title = false;
+                    jhead_buf.clear();
                 }
                 path_stack.pop();
             }
             Ok(Event::Text(t)) => {
                 let tx = t.decode().unwrap_or_default();
-                if in_head { head_buf.push_str(&tx); }
-                if in_jhead_title { jhead_buf.push_str(&tx); }
+                if in_head {
+                    head_buf.push_str(&tx);
+                }
+                if in_jhead_title {
+                    jhead_buf.push_str(&tx);
+                }
             }
             Ok(Event::Eof) => break,
             Err(_) => break,
@@ -1218,17 +1720,27 @@ pub fn list_heads_generic(xml: &str) -> Vec<String> {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
                 let name_owned = e.name().as_ref().to_owned();
-                if local_name(&name_owned) == b"head" { in_head = true; head_buf.clear(); }
+                if local_name(&name_owned) == b"head" {
+                    in_head = true;
+                    head_buf.clear();
+                }
             }
             Ok(Event::End(e)) => {
                 let name_owned = e.name().as_ref().to_owned();
                 if local_name(&name_owned) == b"head" && in_head {
                     let t = head_buf.split_whitespace().collect::<Vec<_>>().join(" ");
-                    if !t.is_empty() { heads.push(t); }
-                    in_head = false; head_buf.clear();
+                    if !t.is_empty() {
+                        heads.push(t);
+                    }
+                    in_head = false;
+                    head_buf.clear();
                 }
             }
-            Ok(Event::Text(t)) => { if in_head { head_buf.push_str(&t.decode().unwrap_or_default()); } }
+            Ok(Event::Text(t)) => {
+                if in_head {
+                    head_buf.push_str(&t.decode().unwrap_or_default());
+                }
+            }
             Ok(Event::Eof) => break,
             Err(_) => break,
             _ => {}
@@ -1257,9 +1769,9 @@ pub struct GrepResult {
 pub struct GrepMatch {
     pub context: String,
     pub highlight: String,
-    pub juan_number: Option<String>,  // CBETA用
-    pub section: Option<String>,      // 構造情報
-    pub line_number: Option<usize>,   // マッチした行番号
+    pub juan_number: Option<String>, // CBETA用
+    pub section: Option<String>,     // 構造情報
+    pub line_number: Option<usize>,  // マッチした行番号
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -1272,98 +1784,134 @@ pub struct FetchHints {
 fn search_index(entries: &[IndexEntry], q: &str, limit: usize) -> Vec<IndexEntry> {
     // best_match関数を使って検索し、IndexEntryのベクトルとして返す
     use unicode_normalization::UnicodeNormalization;
-    
+
     let normalized = |s: &str| -> String {
-        s.nfc().collect::<String>().to_lowercase().chars()
+        s.nfc()
+            .collect::<String>()
+            .to_lowercase()
+            .chars()
             .filter(|c| !c.is_whitespace() && !c.is_ascii_punctuation())
             .collect()
     };
-    
+
     let jaccard = |a: &str, b: &str| -> f32 {
         let sa: std::collections::HashSet<_> = a.chars().collect();
         let sb: std::collections::HashSet<_> = b.chars().collect();
-        if sa.is_empty() || sb.is_empty() { return 0.0; }
+        if sa.is_empty() || sb.is_empty() {
+            return 0.0;
+        }
         let inter = sa.intersection(&sb).count() as f32;
         let uni = (sa.len() + sb.len()).saturating_sub(inter as usize) as f32;
-        if uni == 0.0 { 0.0 } else { inter / uni }
+        if uni == 0.0 {
+            0.0
+        } else {
+            inter / uni
+        }
     };
-    
+
     let tokenset = |s: &str| -> std::collections::HashSet<String> {
-        s.split_whitespace().map(|w| normalized(w)).filter(|w| !w.is_empty()).collect()
+        s.split_whitespace()
+            .map(|w| normalized(w))
+            .filter(|w| !w.is_empty())
+            .collect()
     };
-    
+
     let token_jaccard = |a: &str, b: &str| -> f32 {
         let sa: std::collections::HashSet<_> = tokenset(a);
         let sb: std::collections::HashSet<_> = tokenset(b);
-        if sa.is_empty() || sb.is_empty() { return 0.0; }
+        if sa.is_empty() || sb.is_empty() {
+            return 0.0;
+        }
         let inter = sa.intersection(&sb).count() as f32;
         let uni = (sa.len() + sb.len()).saturating_sub(inter as usize) as f32;
-        if uni == 0.0 { 0.0 } else { inter / uni }
+        if uni == 0.0 {
+            0.0
+        } else {
+            inter / uni
+        }
     };
-    
+
     let nq = normalized(q);
-    let mut scored: Vec<(f32, &IndexEntry)> = entries.iter().map(|e| {
-        let meta_str = e.meta.as_ref().map(|m| m.values().cloned().collect::<Vec<_>>().join(" ")).unwrap_or_default();
-        let hay_all = format!("{} {} {}", e.title, e.id, meta_str);
-        let hay = normalized(&hay_all);
-        let mut score = if hay.contains(&nq) { 1.0f32 } else {
-            let s_char = jaccard(&hay, &nq);
-            let s_tok = token_jaccard(&hay_all, q);
-            s_char.max(s_tok)
-        };
-        
-        // ID完全一致ボーナス
-        if e.id.to_lowercase() == q.to_lowercase() { score = 1.1; }
-        
-        (score, e)
-    }).collect();
-    
-    scored.sort_by(|a,b| b.0.partial_cmp(&a.0).unwrap());
-    scored.into_iter()
+    let mut scored: Vec<(f32, &IndexEntry)> = entries
+        .iter()
+        .map(|e| {
+            let meta_str = e
+                .meta
+                .as_ref()
+                .map(|m| m.values().cloned().collect::<Vec<_>>().join(" "))
+                .unwrap_or_default();
+            let hay_all = format!("{} {} {}", e.title, e.id, meta_str);
+            let hay = normalized(&hay_all);
+            let mut score = if hay.contains(&nq) {
+                1.0f32
+            } else {
+                let s_char = jaccard(&hay, &nq);
+                let s_tok = token_jaccard(&hay_all, q);
+                s_char.max(s_tok)
+            };
+
+            // ID完全一致ボーナス
+            if e.id.to_lowercase() == q.to_lowercase() {
+                score = 1.1;
+            }
+
+            (score, e)
+        })
+        .collect();
+
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+    scored
+        .into_iter()
         .take(limit)
         .filter(|(s, _)| *s > 0.1) // 最低スコア閾値
         .map(|(_, e)| e.clone())
         .collect()
 }
 
-pub fn cbeta_grep(root: &Path, query: &str, max_results: usize, max_matches_per_file: usize) -> Vec<GrepResult> {
+pub fn cbeta_grep(
+    root: &Path,
+    query: &str,
+    max_results: usize,
+    max_matches_per_file: usize,
+) -> Vec<GrepResult> {
     // 1. まずTフォルダから優先的に検索
     let t_folder = root.join("T");
     let mut all_results = Vec::new();
-    
+
     if t_folder.exists() {
         let t_results = cbeta_grep_internal(&t_folder, query, max_results, max_matches_per_file);
         all_results.extend(t_results);
     }
-    
+
     // 2. まだ結果が不足している場合は、他のフォルダも検索
     if all_results.len() < max_results {
         let remaining_limit = max_results - all_results.len();
-        let other_results = cbeta_grep_internal_exclude_t(root, query, remaining_limit, max_matches_per_file);
+        let other_results =
+            cbeta_grep_internal_exclude_t(root, query, remaining_limit, max_matches_per_file);
         all_results.extend(other_results);
     }
-    
+
     // 3. タイトル検索を実行して、マッチしたものがあれば上位に移動
     let index = build_cbeta_index(root);
     let title_results = search_index(&index, query, max_results);
-    
+
     if !title_results.is_empty() {
         // タイトル検索結果をIDの集合に変換
         let title_ids: std::collections::HashSet<_> = title_results.iter().map(|t| &t.id).collect();
-        
+
         // grep結果をタイトルマッチ優先でソート
         all_results.sort_by(|a, b| {
             let a_in_title = title_ids.contains(&a.file_id);
             let b_in_title = title_ids.contains(&b.file_id);
-            
+
             match (a_in_title, b_in_title) {
-                (true, false) => std::cmp::Ordering::Less,   // aがタイトルマッチ → 先に
+                (true, false) => std::cmp::Ordering::Less, // aがタイトルマッチ → 先に
                 (false, true) => std::cmp::Ordering::Greater, // bがタイトルマッチ → 先に
                 _ => {
                     // 両方タイトルマッチまたは両方非マッチの場合、T系列優先
                     let a_is_t = a.file_id.starts_with('T');
                     let b_is_t = b.file_id.starts_with('T');
-                    
+
                     match (a_is_t, b_is_t) {
                         (true, false) => std::cmp::Ordering::Less,
                         (false, true) => std::cmp::Ordering::Greater,
@@ -1373,29 +1921,34 @@ pub fn cbeta_grep(root: &Path, query: &str, max_results: usize, max_matches_per_
             }
         });
     }
-    
+
     all_results.truncate(max_results);
     all_results
 }
 
-fn cbeta_grep_internal(root: &Path, query: &str, max_results: usize, max_matches_per_file: usize) -> Vec<GrepResult> {
+fn cbeta_grep_internal(
+    root: &Path,
+    query: &str,
+    max_results: usize,
+    max_matches_per_file: usize,
+) -> Vec<GrepResult> {
     use regex::RegexBuilder;
-    
+
     let re = match RegexBuilder::new(query)
         .case_insensitive(true)
         .multi_line(true)
-        .build() 
+        .build()
     {
         Ok(r) => r,
         Err(_) => return Vec::new(),
     };
-    
+
     let mut paths: Vec<PathBuf> = Vec::new();
     for e in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
         if e.file_type().is_file() {
             if let Some(name) = e.path().file_name().and_then(|s| s.to_str()) {
-                if name.ends_with(".xml") { 
-                    paths.push(e.into_path()); 
+                if name.ends_with(".xml") {
+                    paths.push(e.into_path());
                 }
             }
         }
@@ -1406,23 +1959,25 @@ fn cbeta_grep_internal(root: &Path, query: &str, max_results: usize, max_matches
         .filter_map(|p| {
             let content = std::fs::read_to_string(p).ok()?;
             let matches: Vec<_> = re.find_iter(&content).collect();
-            
+
             if matches.is_empty() {
                 return None;
             }
 
             let mut grep_matches = Vec::new();
             let mut juan_info = Vec::new();
-            
+
             // Juan情報の抽出（高速化のため制限付き）
             let mut reader = Reader::from_str(&content);
             reader.config_mut().trim_text_start = true;
             reader.config_mut().trim_text_end = true;
             let mut buf = Vec::new();
             let mut events = 0;
-            
+
             loop {
-                if events > 5000 { break; }
+                if events > 5000 {
+                    break;
+                }
                 match reader.read_event_into(&mut buf) {
                     Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                         let name_owned = e.name().as_ref().to_owned();
@@ -1440,29 +1995,31 @@ fn cbeta_grep_internal(root: &Path, query: &str, max_results: usize, max_matches
                 buf.clear();
                 events += 1;
             }
-            
+
             // マッチ箇所の文脈抽出
             for mat in matches.iter().take(max_matches_per_file) {
                 let start = mat.start();
                 let end = mat.end();
-                
+
                 // 行数を計算
                 let line_number = Some(content[..start].lines().count());
-                
+
                 // 文字境界を考慮した安全なスライシング
                 let context_start = start.saturating_sub(100);
                 let context_end = std::cmp::min(end + 100, content.len());
-                
+
                 // 文字境界を見つける
-                let safe_start = content.char_indices()
+                let safe_start = content
+                    .char_indices()
                     .find(|(i, _)| *i >= context_start)
                     .map(|(i, _)| i)
                     .unwrap_or(context_start);
-                let safe_end = content.char_indices()
+                let safe_end = content
+                    .char_indices()
                     .find(|(i, _)| *i >= context_end)
                     .map(|(i, _)| i)
                     .unwrap_or(content.len());
-                
+
                 let context = if safe_start < safe_end {
                     content[safe_start..safe_end]
                         .split_whitespace()
@@ -1471,23 +2028,25 @@ fn cbeta_grep_internal(root: &Path, query: &str, max_results: usize, max_matches
                 } else {
                     String::new()
                 };
-                
+
                 // ハイライト部分も文字境界を考慮
-                let highlight_start = content.char_indices()
+                let highlight_start = content
+                    .char_indices()
                     .find(|(i, _)| *i >= start)
                     .map(|(i, _)| i)
                     .unwrap_or(start);
-                let highlight_end = content.char_indices()
+                let highlight_end = content
+                    .char_indices()
                     .find(|(i, _)| *i >= end)
                     .map(|(i, _)| i)
                     .unwrap_or(content.len());
-                
+
                 let highlight = if highlight_start < highlight_end {
                     content[highlight_start..highlight_end].to_string()
                 } else {
                     String::new()
                 };
-                
+
                 grep_matches.push(GrepMatch {
                     context,
                     highlight,
@@ -1496,17 +2055,17 @@ fn cbeta_grep_internal(root: &Path, query: &str, max_results: usize, max_matches
                     line_number,
                 });
             }
-            
+
             let file_id = stem_from(p);
             let title = file_id.clone(); // 簡易タイトル
-            
+
             // Fetch用ヒント
             let fetch_hints = FetchHints {
                 recommended_parts: juan_info.clone(),
                 total_content_size: Some(format!("{}KB", content.len() / 1024)),
                 structure_info: vec![format!("{}個のjuan", juan_info.len())],
             };
-            
+
             Some(GrepResult {
                 file_path: p.to_string_lossy().to_string(),
                 file_id,
@@ -1522,25 +2081,30 @@ fn cbeta_grep_internal(root: &Path, query: &str, max_results: usize, max_matches
         .collect()
 }
 
-fn cbeta_grep_internal_exclude_t(root: &Path, query: &str, max_results: usize, max_matches_per_file: usize) -> Vec<GrepResult> {
+fn cbeta_grep_internal_exclude_t(
+    root: &Path,
+    query: &str,
+    max_results: usize,
+    max_matches_per_file: usize,
+) -> Vec<GrepResult> {
     use regex::RegexBuilder;
-    
+
     let re = match RegexBuilder::new(query)
         .case_insensitive(true)
         .multi_line(true)
-        .build() 
+        .build()
     {
         Ok(r) => r,
         Err(_) => return Vec::new(),
     };
-    
+
     let mut paths: Vec<PathBuf> = Vec::new();
     for e in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
         if e.file_type().is_file() {
             if let Some(name) = e.path().file_name().and_then(|s| s.to_str()) {
                 // Tフォルダを除外し、XMLファイルのみ対象
-                if name.ends_with(".xml") && !e.path().to_string_lossy().contains("/T/") { 
-                    paths.push(e.into_path()); 
+                if name.ends_with(".xml") && !e.path().to_string_lossy().contains("/T/") {
+                    paths.push(e.into_path());
                 }
             }
         }
@@ -1551,23 +2115,25 @@ fn cbeta_grep_internal_exclude_t(root: &Path, query: &str, max_results: usize, m
         .filter_map(|p| {
             let content = std::fs::read_to_string(p).ok()?;
             let matches: Vec<_> = re.find_iter(&content).collect();
-            
+
             if matches.is_empty() {
                 return None;
             }
 
             let mut grep_matches = Vec::new();
             let mut juan_info = Vec::new();
-            
+
             // Juan情報の抽出（高速化のため制限付き）
             let mut reader = Reader::from_str(&content);
             reader.config_mut().trim_text_start = true;
             reader.config_mut().trim_text_end = true;
             let mut buf = Vec::new();
             let mut events = 0;
-            
+
             loop {
-                if events > 5000 { break; }
+                if events > 5000 {
+                    break;
+                }
                 match reader.read_event_into(&mut buf) {
                     Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                         let name_owned = e.name().as_ref().to_owned();
@@ -1585,29 +2151,31 @@ fn cbeta_grep_internal_exclude_t(root: &Path, query: &str, max_results: usize, m
                 buf.clear();
                 events += 1;
             }
-            
+
             // マッチ箇所の文脈抽出
             for mat in matches.iter().take(max_matches_per_file) {
                 let start = mat.start();
                 let end = mat.end();
-                
+
                 // 行数を計算
                 let line_number = Some(content[..start].lines().count());
-                
+
                 // 文字境界を考慮した安全なスライシング
                 let context_start = start.saturating_sub(100);
                 let context_end = std::cmp::min(end + 100, content.len());
-                
+
                 // 文字境界を見つける
-                let safe_start = content.char_indices()
+                let safe_start = content
+                    .char_indices()
                     .find(|(i, _)| *i >= context_start)
                     .map(|(i, _)| i)
                     .unwrap_or(context_start);
-                let safe_end = content.char_indices()
+                let safe_end = content
+                    .char_indices()
                     .find(|(i, _)| *i >= context_end)
                     .map(|(i, _)| i)
                     .unwrap_or(content.len());
-                
+
                 let context = if safe_start < safe_end {
                     content[safe_start..safe_end]
                         .split_whitespace()
@@ -1616,23 +2184,25 @@ fn cbeta_grep_internal_exclude_t(root: &Path, query: &str, max_results: usize, m
                 } else {
                     String::new()
                 };
-                
+
                 // ハイライト部分も文字境界を考慮
-                let highlight_start = content.char_indices()
+                let highlight_start = content
+                    .char_indices()
                     .find(|(i, _)| *i >= start)
                     .map(|(i, _)| i)
                     .unwrap_or(start);
-                let highlight_end = content.char_indices()
+                let highlight_end = content
+                    .char_indices()
                     .find(|(i, _)| *i >= end)
                     .map(|(i, _)| i)
                     .unwrap_or(content.len());
-                
+
                 let highlight = if highlight_start < highlight_end {
                     content[highlight_start..highlight_end].to_string()
                 } else {
                     String::new()
                 };
-                
+
                 grep_matches.push(GrepMatch {
                     context,
                     highlight,
@@ -1641,17 +2211,17 @@ fn cbeta_grep_internal_exclude_t(root: &Path, query: &str, max_results: usize, m
                     line_number,
                 });
             }
-            
+
             let file_id = stem_from(p);
             let title = file_id.clone(); // 簡易タイトル
-            
+
             // Fetch用ヒント
             let fetch_hints = FetchHints {
                 recommended_parts: juan_info.clone(),
                 total_content_size: Some(format!("{}KB", content.len() / 1024)),
                 structure_info: vec![format!("{}個のjuan", juan_info.len())],
             };
-            
+
             Some(GrepResult {
                 file_path: p.to_string_lossy().to_string(),
                 file_id,
@@ -1667,26 +2237,28 @@ fn cbeta_grep_internal_exclude_t(root: &Path, query: &str, max_results: usize, m
         .collect()
 }
 
-pub fn tipitaka_grep(root: &Path, query: &str, max_results: usize, max_matches_per_file: usize) -> Vec<GrepResult> {
+pub fn tipitaka_grep(
+    root: &Path,
+    query: &str,
+    max_results: usize,
+    max_matches_per_file: usize,
+) -> Vec<GrepResult> {
     use regex::RegexBuilder;
-    
+
     let re = match RegexBuilder::new(query)
         .case_insensitive(true)
         .multi_line(true)
-        .build() 
+        .build()
     {
         Ok(r) => r,
         Err(_) => return Vec::new(),
     };
-    
+
     let mut paths: Vec<PathBuf> = Vec::new();
     for e in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
         if e.file_type().is_file() {
             if let Some(name) = e.path().file_name().and_then(|s| s.to_str()) {
-                if name.ends_with(".xml") 
-                    && !name.contains("toc") 
-                    && !name.contains("sitemap") 
-                {
+                if name.ends_with(".xml") && !name.contains("toc") && !name.contains("sitemap") {
                     paths.push(e.into_path());
                 }
             }
@@ -1715,19 +2287,19 @@ pub fn tipitaka_grep(root: &Path, query: &str, max_results: usize, max_matches_p
                             Err(_) => return None,
                         }
                     }
-                },
+                }
                 Err(_) => return None,
             };
-            
+
             let matches: Vec<_> = re.find_iter(&content).collect();
-            
+
             if matches.is_empty() {
                 return None;
             }
 
             let mut grep_matches = Vec::new();
             let mut structure_info = Vec::new();
-            
+
             // 構造情報の高速抽出
             let mut reader = Reader::from_str(&content);
             reader.config_mut().trim_text_start = true;
@@ -1736,9 +2308,11 @@ pub fn tipitaka_grep(root: &Path, query: &str, max_results: usize, max_matches_p
             let mut events = 0;
             let mut nikaya = None;
             let mut book = None;
-            
+
             loop {
-                if events > 5000 { break; }
+                if events > 5000 {
+                    break;
+                }
                 match reader.read_event_into(&mut buf) {
                     Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                         let name_owned = e.name().as_ref().to_owned();
@@ -1758,7 +2332,9 @@ pub fn tipitaka_grep(root: &Path, query: &str, max_results: usize, max_matches_p
                                 }
                             }
                         } else if name == b"div" {
-                            if let (Some(n), Some(type_val)) = (attr_val(&e, b"n"), attr_val(&e, b"type")) {
+                            if let (Some(n), Some(type_val)) =
+                                (attr_val(&e, b"n"), attr_val(&e, b"type"))
+                            {
                                 structure_info.push(format!("{}({})", n, type_val));
                             }
                         }
@@ -1778,29 +2354,31 @@ pub fn tipitaka_grep(root: &Path, query: &str, max_results: usize, max_matches_p
                 buf.clear();
                 events += 1;
             }
-            
+
             // マッチ箇所の文脈抽出
             for mat in matches.iter().take(max_matches_per_file) {
                 let start = mat.start();
                 let end = mat.end();
-                
+
                 // 行数を計算
                 let line_number = Some(content[..start].lines().count());
-                
+
                 // 文字境界を考慮した安全なスライシング
                 let context_start = start.saturating_sub(150);
                 let context_end = std::cmp::min(end + 150, content.len());
-                
+
                 // 文字境界を見つける
-                let safe_start = content.char_indices()
+                let safe_start = content
+                    .char_indices()
                     .find(|(i, _)| *i >= context_start)
                     .map(|(i, _)| i)
                     .unwrap_or(context_start);
-                let safe_end = content.char_indices()
+                let safe_end = content
+                    .char_indices()
                     .find(|(i, _)| *i >= context_end)
                     .map(|(i, _)| i)
                     .unwrap_or(content.len());
-                
+
                 let context = if safe_start < safe_end {
                     content[safe_start..safe_end]
                         .split_whitespace()
@@ -1809,23 +2387,25 @@ pub fn tipitaka_grep(root: &Path, query: &str, max_results: usize, max_matches_p
                 } else {
                     String::new()
                 };
-                
+
                 // ハイライト部分も文字境界を考慮
-                let highlight_start = content.char_indices()
+                let highlight_start = content
+                    .char_indices()
                     .find(|(i, _)| *i >= start)
                     .map(|(i, _)| i)
                     .unwrap_or(start);
-                let highlight_end = content.char_indices()
+                let highlight_end = content
+                    .char_indices()
                     .find(|(i, _)| *i >= end)
                     .map(|(i, _)| i)
                     .unwrap_or(content.len());
-                
+
                 let highlight = if highlight_start < highlight_end {
                     content[highlight_start..highlight_end].to_string()
                 } else {
                     String::new()
                 };
-                
+
                 grep_matches.push(GrepMatch {
                     context,
                     highlight,
@@ -1834,22 +2414,26 @@ pub fn tipitaka_grep(root: &Path, query: &str, max_results: usize, max_matches_p
                     line_number,
                 });
             }
-            
+
             let file_id = stem_from(p);
             let title = [nikaya.as_deref(), book.as_deref()]
                 .iter()
                 .filter_map(|&s| s)
                 .collect::<Vec<_>>()
                 .join(" · ");
-            let title = if title.is_empty() { file_id.clone() } else { title };
-            
+            let title = if title.is_empty() {
+                file_id.clone()
+            } else {
+                title
+            };
+
             // Fetch用ヒント
             let fetch_hints = FetchHints {
                 recommended_parts: vec!["full".to_string()], // Tipitakaは通常全体を取得
                 total_content_size: Some(format!("{}KB", content.len() / 1024)),
                 structure_info,
             };
-            
+
             Some(GrepResult {
                 file_path: p.to_string_lossy().to_string(),
                 file_id,
@@ -1865,9 +2449,18 @@ pub fn tipitaka_grep(root: &Path, query: &str, max_results: usize, max_matches_p
         .collect()
 }
 
-pub fn gretil_grep(root: &Path, query: &str, max_results: usize, max_matches_per_file: usize) -> Vec<GrepResult> {
+pub fn gretil_grep(
+    root: &Path,
+    query: &str,
+    max_results: usize,
+    max_matches_per_file: usize,
+) -> Vec<GrepResult> {
     use regex::RegexBuilder;
-    let re = match RegexBuilder::new(query).case_insensitive(true).multi_line(true).build() {
+    let re = match RegexBuilder::new(query)
+        .case_insensitive(true)
+        .multi_line(true)
+        .build()
+    {
         Ok(r) => r,
         Err(_) => return Vec::new(),
     };
@@ -1875,7 +2468,9 @@ pub fn gretil_grep(root: &Path, query: &str, max_results: usize, max_matches_per
     for e in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
         if e.file_type().is_file() {
             if let Some(name) = e.path().file_name().and_then(|s| s.to_str()) {
-                if name.ends_with(".xml") { paths.push(e.into_path()); }
+                if name.ends_with(".xml") {
+                    paths.push(e.into_path());
+                }
             }
         }
     }
@@ -1884,7 +2479,9 @@ pub fn gretil_grep(root: &Path, query: &str, max_results: usize, max_matches_per
         .filter_map(|p| {
             let content = std::fs::read_to_string(p).ok()?;
             let matches: Vec<_> = re.find_iter(&content).collect();
-            if matches.is_empty() { return None; }
+            if matches.is_empty() {
+                return None;
+            }
             let mut grep_matches = Vec::new();
             for mat in matches.iter().take(max_matches_per_file) {
                 let start = mat.start();
@@ -1892,20 +2489,62 @@ pub fn gretil_grep(root: &Path, query: &str, max_results: usize, max_matches_per
                 let line_number = Some(content[..start].lines().count());
                 let context_start = start.saturating_sub(120);
                 let context_end = std::cmp::min(end + 120, content.len());
-                let safe_start = content.char_indices().find(|(i, _)| *i >= context_start).map(|(i, _)| i).unwrap_or(context_start);
-                let safe_end = content.char_indices().find(|(i, _)| *i >= context_end).map(|(i, _)| i).unwrap_or(content.len());
+                let safe_start = content
+                    .char_indices()
+                    .find(|(i, _)| *i >= context_start)
+                    .map(|(i, _)| i)
+                    .unwrap_or(context_start);
+                let safe_end = content
+                    .char_indices()
+                    .find(|(i, _)| *i >= context_end)
+                    .map(|(i, _)| i)
+                    .unwrap_or(content.len());
                 let context = if safe_start < safe_end {
-                    content[safe_start..safe_end].split_whitespace().collect::<Vec<_>>().join(" ")
-                } else { String::new() };
-                let highlight_start = content.char_indices().find(|(i, _)| *i >= start).map(|(i, _)| i).unwrap_or(start);
-                let highlight_end = content.char_indices().find(|(i, _)| *i >= end).map(|(i, _)| i).unwrap_or(content.len());
-                let highlight = if highlight_start < highlight_end { content[highlight_start..highlight_end].to_string() } else { String::new() };
-                grep_matches.push(GrepMatch { context, highlight, juan_number: None, section: None, line_number });
+                    content[safe_start..safe_end]
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                } else {
+                    String::new()
+                };
+                let highlight_start = content
+                    .char_indices()
+                    .find(|(i, _)| *i >= start)
+                    .map(|(i, _)| i)
+                    .unwrap_or(start);
+                let highlight_end = content
+                    .char_indices()
+                    .find(|(i, _)| *i >= end)
+                    .map(|(i, _)| i)
+                    .unwrap_or(content.len());
+                let highlight = if highlight_start < highlight_end {
+                    content[highlight_start..highlight_end].to_string()
+                } else {
+                    String::new()
+                };
+                grep_matches.push(GrepMatch {
+                    context,
+                    highlight,
+                    juan_number: None,
+                    section: None,
+                    line_number,
+                });
             }
             let file_id = stem_from(p);
             let title = file_id.clone();
-            let fetch_hints = FetchHints { recommended_parts: vec!["full".to_string()], total_content_size: Some(format!("{}KB", content.len() / 1024)), structure_info: Vec::new() };
-            Some(GrepResult { file_path: p.to_string_lossy().to_string(), file_id, title, matches: grep_matches, total_matches: matches.len(), fetch_hints })
+            let fetch_hints = FetchHints {
+                recommended_parts: vec!["full".to_string()],
+                total_content_size: Some(format!("{}KB", content.len() / 1024)),
+                structure_info: Vec::new(),
+            };
+            Some(GrepResult {
+                file_path: p.to_string_lossy().to_string(),
+                file_id,
+                title,
+                matches: grep_matches,
+                total_matches: matches.len(),
+                fetch_hints,
+            })
         })
         .collect::<Vec<_>>()
         .into_iter()

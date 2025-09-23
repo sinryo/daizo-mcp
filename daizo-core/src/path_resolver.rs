@@ -13,10 +13,18 @@ pub fn daizo_home() -> PathBuf {
         .join(".daizo")
 }
 
-pub fn cbeta_root() -> PathBuf { daizo_home().join("xml-p5") }
-pub fn tipitaka_root() -> PathBuf { daizo_home().join("tipitaka-xml").join("romn") }
-pub fn gretil_root() -> PathBuf { daizo_home().join("GRETIL").join("1_sanskr").join("tei") }
-pub fn cache_dir() -> PathBuf { daizo_home().join("cache") }
+pub fn cbeta_root() -> PathBuf {
+    daizo_home().join("xml-p5")
+}
+pub fn tipitaka_root() -> PathBuf {
+    daizo_home().join("tipitaka-xml").join("romn")
+}
+pub fn gretil_root() -> PathBuf {
+    daizo_home().join("GRETIL").join("1_sanskr").join("tei")
+}
+pub fn cache_dir() -> PathBuf {
+    daizo_home().join("cache")
+}
 
 pub fn find_in_dir(root: &Path, stem_hint: &str) -> Option<PathBuf> {
     for e in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
@@ -53,7 +61,10 @@ pub fn resolve_cbeta_path_by_id(id: &str) -> Option<PathBuf> {
     if let Some(c) = m.captures(id) {
         let canon = &c[1];
         let num = &c[2];
-        for e in WalkDir::new(root.join(canon)).into_iter().filter_map(|e| e.ok()) {
+        for e in WalkDir::new(root.join(canon))
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
             if e.file_type().is_file() {
                 let name = e.file_name().to_string_lossy().to_lowercase();
                 if name.contains(&format!("n{}", num)) && name.ends_with(".xml") {
@@ -146,11 +157,17 @@ pub fn resolve_tipitaka_by_id(index: &[IndexEntry], id: &str) -> Option<PathBuf>
             }
         }
     }
-    if let Some((_, p)) = best_seq { return Some(p); }
+    if let Some((_, p)) = best_seq {
+        return Some(p);
+    }
     // base-content fallback
-    if let Some(p) = find_tipitaka_content_for_base(id) { return Some(p); }
+    if let Some(p) = find_tipitaka_content_for_base(id) {
+        return Some(p);
+    }
     // directory scan fallback
-    if let Some(p) = find_in_dir(&tipitaka_root(), id) { return Some(p); }
+    if let Some(p) = find_in_dir(&tipitaka_root(), id) {
+        return Some(p);
+    }
     // exact filename fallback
     find_exact_file_by_name(&tipitaka_root(), &format!("{}.xml", id))
 }
@@ -179,7 +196,9 @@ pub fn resolve_gretil_by_id(index: &[IndexEntry], id: &str) -> Option<PathBuf> {
         }
     }
     // direct directory scan
-    if let Some(p) = find_in_dir(&gretil_root(), id) { return Some(p); }
+    if let Some(p) = find_in_dir(&gretil_root(), id) {
+        return Some(p);
+    }
     // strict filename fallback
     find_exact_file_by_name(&gretil_root(), &format!("{}.xml", id))
 }
@@ -208,8 +227,18 @@ mod tests {
         fs::write(&a0, "<xml/>").unwrap();
         fs::write(&a1, "<xml/>").unwrap();
         let idx = vec![
-            IndexEntry { id: "x".into(), title: "t".into(), path: a1.to_string_lossy().into_owned(), meta: Some(BTreeMap::new()) },
-            IndexEntry { id: "x".into(), title: "t".into(), path: a0.to_string_lossy().into_owned(), meta: Some(BTreeMap::new()) },
+            IndexEntry {
+                id: "x".into(),
+                title: "t".into(),
+                path: a1.to_string_lossy().into_owned(),
+                meta: Some(BTreeMap::new()),
+            },
+            IndexEntry {
+                id: "x".into(),
+                title: "t".into(),
+                path: a0.to_string_lossy().into_owned(),
+                meta: Some(BTreeMap::new()),
+            },
         ];
         let p = resolve_tipitaka_by_id(&idx, "base").unwrap();
         assert_eq!(p.file_name().unwrap(), "base0.xml");

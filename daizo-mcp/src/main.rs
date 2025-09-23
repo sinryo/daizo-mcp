@@ -480,6 +480,28 @@ fn slice_text(text: &str, args: &serde_json::Value) -> String {
     text[s_byte..e_byte].to_string()
 }
 
+fn slice_text_bounds(text: &str, start_char: usize, max_chars: usize) -> (String, usize, usize, usize) {
+    let total_chars = text.chars().count();
+    let effective_start = std::cmp::min(start_char, total_chars);
+    let target_end = effective_start.saturating_add(max_chars);
+    let effective_end = std::cmp::min(target_end, total_chars);
+
+    let start_byte = if effective_start == total_chars {
+        text.len()
+    } else {
+        text.char_indices().nth(effective_start).map(|(idx, _)| idx).unwrap_or(text.len())
+    };
+    let end_byte = if effective_end == total_chars {
+        text.len()
+    } else {
+        text.char_indices().nth(effective_end).map(|(idx, _)| idx).unwrap_or(text.len())
+    };
+
+    let slice = if start_byte <= end_byte { text[start_byte..end_byte].to_string() } else { String::new() };
+
+    (slice, total_chars, effective_start, effective_end)
+}
+
 fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json::Value {
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
@@ -858,16 +880,15 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                     let t = sat_fetch(&url);
                     let start = args.get("startChar").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                     let maxc = args.get("maxChars").and_then(|v| v.as_u64()).unwrap_or(8000) as usize;
-                    let end = std::cmp::min(t.len(), start+maxc);
-                    let sliced = t.get(start..end).unwrap_or("").to_string();
+                    let (sliced, total_chars, returned_start, returned_end) = slice_text_bounds(&t, start, maxc);
                     let mut meta = meta_base;
                     meta["chosen"] = chosen.clone();
                     meta["titleScore"] = json!(best_sc);
                     meta["sourceUrl"] = json!(url);
-                    meta["returnedStart"] = json!(start as u64);
-                    meta["returnedEnd"] = json!(end as u64);
-                    meta["totalLength"] = json!(t.len());
-                    meta["truncated"] = json!(end < t.len());
+                    meta["returnedStart"] = json!(returned_start as u64);
+                    meta["returnedEnd"] = json!(returned_end as u64);
+                    meta["totalLength"] = json!(total_chars as u64);
+                    meta["truncated"] = json!(returned_end < total_chars);
                     meta["extractionMethod"] = json!("sat-detail-extract");
                     return json!({ "jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": sliced }], "_meta": meta }});
                 } else {
@@ -889,13 +910,12 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
             let start = args.get("startChar").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
             let maxc = args.get("maxChars").and_then(|v| v.as_u64()).unwrap_or(8000) as usize;
             let t = sat_fetch(&url);
-            let end = std::cmp::min(t.len(), start+maxc);
-            let sliced = t.get(start..end).unwrap_or("").to_string();
+            let (sliced, total_chars, returned_start, returned_end) = slice_text_bounds(&t, start, maxc);
             let meta = json!({
-                "totalLength": t.len(),
-                "returnedStart": start as u64,
-                "returnedEnd": end as u64,
-                "truncated": end < t.len(),
+                "totalLength": total_chars as u64,
+                "returnedStart": returned_start as u64,
+                "returnedEnd": returned_end as u64,
+                "truncated": returned_end < total_chars,
                 "sourceUrl": url,
                 "extractionMethod": "sat-detail-extract"
             });
@@ -908,13 +928,12 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
             let start = args.get("startChar").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
             let maxc = args.get("maxChars").and_then(|v| v.as_u64()).unwrap_or(8000) as usize;
             let t = sat_fetch(&url);
-            let end = std::cmp::min(t.len(), start+maxc);
-            let sliced = t.get(start..end).unwrap_or("").to_string();
+            let (sliced, total_chars, returned_start, returned_end) = slice_text_bounds(&t, start, maxc);
             let meta = json!({
-                "totalLength": t.len(),
-                "returnedStart": start as u64,
-                "returnedEnd": end as u64,
-                "truncated": end < t.len(),
+                "totalLength": total_chars as u64,
+                "returnedStart": returned_start as u64,
+                "returnedEnd": returned_end as u64,
+                "truncated": returned_end < total_chars,
                 "sourceUrl": url,
                 "extractionMethod": "sat-detail-extract"
             });
@@ -942,14 +961,13 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                 let useid = chosen.get("startid").and_then(|v| v.as_str()).unwrap_or("");
                 let url = sat_detail_build_url(useid);
                 let t = sat_fetch(&url);
-                let end = std::cmp::min(t.len(), start+maxc);
-                let sliced = t.get(start..end).unwrap_or("").to_string();
+                let (sliced, total_chars, returned_start, returned_end) = slice_text_bounds(&t, start, maxc);
                 let count = jsonv.get("response").and_then(|r| r.get("numFound")).and_then(|v| v.as_u64()).unwrap_or(0);
                 let meta = json!({
-                    "totalLength": t.len(),
-                    "returnedStart": start as u64,
-                    "returnedEnd": end as u64,
-                    "truncated": end < t.len(),
+                    "totalLength": total_chars as u64,
+                    "returnedStart": returned_start as u64,
+                    "returnedEnd": returned_end as u64,
+                    "truncated": returned_end < total_chars,
                     "sourceUrl": url,
                     "extractionMethod": "sat-detail-extract",
                     "search": {"rows": rows, "offs": offs, "fl": fields, "fq": fq, "count": count},
@@ -1805,6 +1823,42 @@ fn normalize_ws(s: &str) -> String {
     t = t.split('\n').map(|l| l.trim()).collect::<Vec<_>>().join("\n");
     while t.contains("\n\n\n") { t = t.replace("\n\n\n", "\n\n"); }
     t
+}
+
+#[cfg(test)]
+mod tests {
+    use super::slice_text_bounds;
+
+    #[test]
+    fn slice_text_bounds_handles_multibyte_characters() {
+        let text = "大般若經初會序";
+        let (slice, total_chars, start, end) = slice_text_bounds(text, 0, 4);
+        assert_eq!(slice, "大般若經");
+        assert_eq!(total_chars, text.chars().count());
+        assert_eq!(start, 0);
+        assert_eq!(end, 4);
+
+        let (slice_mid, _, start_mid, end_mid) = slice_text_bounds(text, 2, 3);
+        assert_eq!(slice_mid, "若經初");
+        assert_eq!(start_mid, 2);
+        assert_eq!(end_mid, 5);
+    }
+
+    #[test]
+    fn slice_text_bounds_clamps_to_text_length() {
+        let text = "般若心経";
+        let (slice, total, start, end) = slice_text_bounds(text, 10, 5);
+        assert!(slice.is_empty());
+        assert_eq!(total, text.chars().count());
+        assert_eq!(start, total);
+        assert_eq!(end, total);
+
+        let (slice_full, total_full, start_full, end_full) = slice_text_bounds(text, 1, 100);
+        assert_eq!(slice_full, "若心経");
+        assert_eq!(total_full, text.chars().count());
+        assert_eq!(start_full, 1);
+        assert_eq!(end_full, total_full);
+    }
 }
 
 fn main() -> Result<()> {

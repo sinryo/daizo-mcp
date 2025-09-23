@@ -1,18 +1,30 @@
+use crate::IndexEntry;
+use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use unicode_normalization::UnicodeNormalization;
-use crate::IndexEntry;
-use serde::{Deserialize, Serialize};
-use regex::Regex;
 
 /// Normalize string for general matching: NFKD + lower + CJK harmonization + alnum only
 pub fn normalized(s: &str) -> String {
     let mut t: String = s.nfkd().collect::<String>().to_lowercase();
     // Map common simplified/variant forms to traditional used frequently in corpora
     let map: [(&str, &str); 12] = [
-        ("経", "經"), ("经", "經"), ("观", "觀"), ("圣", "聖"), ("会", "會"), ("后", "後"),
-        ("国", "國"), ("灵", "靈"), ("广", "廣"), ("龙", "龍"), ("台", "臺"), ("体", "體"),
+        ("経", "經"),
+        ("经", "經"),
+        ("观", "觀"),
+        ("圣", "聖"),
+        ("会", "會"),
+        ("后", "後"),
+        ("国", "國"),
+        ("灵", "靈"),
+        ("广", "廣"),
+        ("龙", "龍"),
+        ("台", "臺"),
+        ("体", "體"),
     ];
-    for (a, b) in map.iter() { t = t.replace(a, b); }
+    for (a, b) in map.iter() {
+        t = t.replace(a, b);
+    }
     t.chars().filter(|c| c.is_alphanumeric()).collect()
 }
 
@@ -34,13 +46,22 @@ pub fn normalized_pali(s: &str) -> String {
         .chars()
         .map(|c| match c {
             // Long vowels -> short vowels
-            'ā' => 'a', 'ī' => 'i', 'ū' => 'u',
+            'ā' => 'a',
+            'ī' => 'i',
+            'ū' => 'u',
             // Nasals and other marks
-            'ṅ' => 'n', 'ñ' => 'n', 'ṇ' => 'n', 'ṃ' => 'm',
+            'ṅ' => 'n',
+            'ñ' => 'n',
+            'ṇ' => 'n',
+            'ṃ' => 'm',
             // Dental/retroflex consonants
-            'ṭ' => 't', 'ḍ' => 'd', 'ḷ' => 'l',
+            'ṭ' => 't',
+            'ḍ' => 'd',
+            'ḷ' => 'l',
             // Other diacritical marks
-            'ṛ' => 'r', 'ḥ' => 'h', 'ṁ' => 'm',
+            'ṛ' => 'r',
+            'ḥ' => 'h',
+            'ṁ' => 'm',
             _ => c,
         })
         .collect::<String>();
@@ -54,15 +75,30 @@ pub fn normalized_sanskrit(s: &str) -> String {
         .chars()
         .map(|c| match c {
             // Long vowels
-            'ā' => 'a', 'ī' => 'i', 'ū' => 'u', 'ȳ' => 'y',
+            'ā' => 'a',
+            'ī' => 'i',
+            'ū' => 'u',
+            'ȳ' => 'y',
             // Retroflex/dental/aspirates
-            'ṭ' => 't', 'ḍ' => 'd', 'ṇ' => 'n', 'ḷ' => 'l', 'ḹ' => 'l', 'ḻ' => 'l',
+            'ṭ' => 't',
+            'ḍ' => 'd',
+            'ṇ' => 'n',
+            'ḷ' => 'l',
+            'ḹ' => 'l',
+            'ḻ' => 'l',
             // Sibilants and palatals
-            'ś' => 's', 'ṣ' => 's', 'ç' => 'c',
+            'ś' => 's',
+            'ṣ' => 's',
+            'ç' => 'c',
             // Nasals and anusvāra/visarga
-            'ṅ' => 'n', 'ñ' => 'n', 'ṃ' => 'm', 'ṁ' => 'm', 'ḥ' => 'h',
+            'ṅ' => 'n',
+            'ñ' => 'n',
+            'ṃ' => 'm',
+            'ṁ' => 'm',
+            'ḥ' => 'h',
             // Vocalic r/ḷ
-            'ṛ' => 'r', 'ṝ' => 'r',
+            'ṛ' => 'r',
+            'ṝ' => 'r',
             _ => c,
         })
         .collect::<String>();
@@ -99,7 +135,9 @@ pub fn compute_match_score_sanskrit(entry: &IndexEntry, q: &str) -> f32 {
         let subseq = is_subsequence(&hay, &nq)
             || is_subsequence(&nq, &hay)
             || is_subsequence(&normalized_sanskrit(&hay_all), &normalized_sanskrit(q));
-        if subseq { score = score.max(0.85); }
+        if subseq {
+            score = score.max(0.85);
+        }
     }
     let nalias = normalized_with_spaces(&alias).replace(' ', "");
     let nalias_fold = normalized_sanskrit(&alias);
@@ -108,7 +146,9 @@ pub fn compute_match_score_sanskrit(entry: &IndexEntry, q: &str) -> f32 {
         if nalias.split_whitespace().any(|a| a == nq_nospace)
             || nalias.contains(&nq_nospace)
             || (!nalias_fold.is_empty() && nalias_fold.contains(&normalized_sanskrit(q)))
-        { score = score.max(0.95); }
+        {
+            score = score.max(0.95);
+        }
     }
     if q.chars().any(|c| c.is_ascii_digit()) {
         let hws = normalized_with_spaces(&hay_all);
@@ -130,10 +170,16 @@ pub fn tokenset(s: &str) -> HashSet<String> {
 pub fn token_jaccard(a: &str, b: &str) -> f32 {
     let sa: HashSet<_> = tokenset(a);
     let sb: HashSet<_> = tokenset(b);
-    if sa.is_empty() || sb.is_empty() { return 0.0; }
+    if sa.is_empty() || sb.is_empty() {
+        return 0.0;
+    }
     let inter = sa.intersection(&sb).count() as f32;
     let uni = (sa.len() + sb.len()).saturating_sub(inter as usize) as f32;
-    if uni == 0.0 { 0.0 } else { inter / uni }
+    if uni == 0.0 {
+        0.0
+    } else {
+        inter / uni
+    }
 }
 
 /// Character bigram Jaccard similarity
@@ -142,15 +188,23 @@ pub fn jaccard(a: &str, b: &str) -> f32 {
     let sb: HashSet<_> = b.as_bytes().windows(2).collect();
     let inter = sa.intersection(&sb).count() as f32;
     let uni = (sa.len() + sb.len()).saturating_sub(inter as usize) as f32;
-    if uni == 0.0 { 0.0 } else { inter / uni }
+    if uni == 0.0 {
+        0.0
+    } else {
+        inter / uni
+    }
 }
 
 /// Simple subsequence test (order-preserving containment)
 pub fn is_subsequence(text: &str, pat: &str) -> bool {
     let mut i = 0usize;
     for ch in text.chars() {
-        if i < pat.len() && ch == pat.chars().nth(i).unwrap_or('\0') { i += 1; }
-        if i >= pat.len() { return true; }
+        if i < pat.len() && ch == pat.chars().nth(i).unwrap_or('\0') {
+            i += 1;
+        }
+        if i >= pat.len() {
+            return true;
+        }
     }
     i >= pat.len()
 }
@@ -198,12 +252,18 @@ pub fn compute_match_score(entry: &IndexEntry, q: &str, use_pali: bool) -> f32 {
                 (Some(hp), Some(np)) => is_subsequence(&hp, &np),
                 _ => false,
             };
-        if subseq { score = score.max(0.85); }
+        if subseq {
+            score = score.max(0.85);
+        }
     }
 
     // alias exact/contains boosts
     let nalias = normalized_with_spaces(&alias).replace(' ', "");
-    let nalias_pali = if use_pali { normalized_pali(&alias) } else { String::new() };
+    let nalias_pali = if use_pali {
+        normalized_pali(&alias)
+    } else {
+        String::new()
+    };
     let nq_nospace = normalized_with_spaces(q).replace(' ', "");
     if !nalias.is_empty() {
         if nalias.split_whitespace().any(|a| a == nq_nospace)
@@ -227,7 +287,9 @@ pub fn compute_match_score(entry: &IndexEntry, q: &str, use_pali: bool) -> f32 {
 /// ハイライト位置を返す（文字インデックス）。`is_regex=true` の場合は正規表現検索。
 pub fn find_highlight_positions(text: &str, pattern: &str, is_regex: bool) -> Vec<HighlightPos> {
     let mut out: Vec<HighlightPos> = Vec::new();
-    if pattern.is_empty() { return out; }
+    if pattern.is_empty() {
+        return out;
+    }
     if is_regex {
         if let Ok(re) = Regex::new(pattern) {
             for m in re.find_iter(text) {
@@ -235,7 +297,10 @@ pub fn find_highlight_positions(text: &str, pattern: &str, is_regex: bool) -> Ve
                 let eb = m.end();
                 let sc = text[..sb].chars().count();
                 let ec = sc + text[sb..eb].chars().count();
-                out.push(HighlightPos { start_char: sc, end_char: ec });
+                out.push(HighlightPos {
+                    start_char: sc,
+                    end_char: ec,
+                });
             }
         }
     } else {
@@ -244,7 +309,10 @@ pub fn find_highlight_positions(text: &str, pattern: &str, is_regex: bool) -> Ve
             let abs = i + pos;
             let sc = text[..abs].chars().count();
             let ec = sc + pattern.chars().count();
-            out.push(HighlightPos { start_char: sc, end_char: ec });
+            out.push(HighlightPos {
+                start_char: sc,
+                end_char: ec,
+            });
             i = abs + pattern.len();
         }
     }
@@ -252,10 +320,20 @@ pub fn find_highlight_positions(text: &str, pattern: &str, is_regex: bool) -> Ve
 }
 
 /// テキストへ装飾を適用し、ハイライト数と位置（文字インデックス）を返す
-pub fn highlight_text(text: &str, pattern: &str, is_regex: bool, prefix: &str, suffix: &str) -> (String, usize, Vec<HighlightPos>) {
-    if pattern.is_empty() { return (text.to_string(), 0, Vec::new()); }
+pub fn highlight_text(
+    text: &str,
+    pattern: &str,
+    is_regex: bool,
+    prefix: &str,
+    suffix: &str,
+) -> (String, usize, Vec<HighlightPos>) {
+    if pattern.is_empty() {
+        return (text.to_string(), 0, Vec::new());
+    }
     let positions = find_highlight_positions(text, pattern, is_regex);
-    if positions.is_empty() { return (text.to_string(), 0, positions); }
+    if positions.is_empty() {
+        return (text.to_string(), 0, positions);
+    }
     if is_regex {
         if let Ok(re) = Regex::new(pattern) {
             let mut count = 0usize;
@@ -312,7 +390,12 @@ mod tests {
     fn compute_match_score_alias_boost() {
         let mut meta = BTreeMap::new();
         meta.insert("alias".to_string(), "DN 1".to_string());
-        let e = IndexEntry { id: "id1".into(), title: "Digha Nikaya".into(), path: "/tmp/x.xml".into(), meta: Some(meta) };
+        let e = IndexEntry {
+            id: "id1".into(),
+            title: "Digha Nikaya".into(),
+            path: "/tmp/x.xml".into(),
+            meta: Some(meta),
+        };
         let s = compute_match_score(&e, "DN1", true);
         assert!(s >= 0.95, "expected alias boost >= 0.95, got {}", s);
     }
