@@ -1,7 +1,8 @@
 use clap::{Parser, Subcommand};
 use daizo_core::path_resolver::{
     cache_dir, cbeta_root, find_exact_file_by_name, find_tipitaka_content_for_base, gretil_root,
-    resolve_cbeta_path_by_id, resolve_gretil_by_id, resolve_tipitaka_by_id, tipitaka_root,
+    resolve_cbeta_path_by_id, resolve_gretil_by_id, resolve_gretil_path_direct,
+    resolve_tipitaka_by_id, tipitaka_root,
 };
 use daizo_core::text_utils::compute_match_score_sanskrit;
 use daizo_core::text_utils::{compute_match_score, normalized};
@@ -17,8 +18,24 @@ use std::process::Command;
 mod regex_utils;
 //
 
+/// バージョン情報を生成
+fn long_version() -> &'static str {
+    concat!(
+        env!("CARGO_PKG_VERSION"),
+        "\nBuilt: ",
+        env!("BUILD_DATE"),
+        "\nCommit: ",
+        env!("GIT_HASH")
+    )
+}
+
 #[derive(Parser, Debug)]
-#[command(name = "daizo-rs", about = "High-performance helpers for daizo-mcp")]
+#[command(
+    name = "daizo-cli",
+    about = "High-performance Buddhist text search and retrieval CLI",
+    version,
+    long_version = long_version()
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -1425,14 +1442,13 @@ pub(crate) fn load_or_build_gretil_index_cli() -> Vec<daizo_core::IndexEntry> {
 // directory scans are provided by daizo_core::path_resolver
 
 pub(crate) fn resolve_tipitaka_path(id: Option<&str>, query: Option<&str>) -> PathBuf {
-    if let Some(q) = query {
-        let idx = load_or_build_tipitaka_index_cli();
-        if let Some(hit) = best_match(&idx, q, 1).into_iter().next() {
-            return PathBuf::from(&hit.entry.path);
-        }
-        return PathBuf::new();
-    }
+    // ID指定時は直接パス解決を最初に試みる（高速）
     if let Some(id) = id {
+        // 直接パス解決（インデックス不要）
+        if let Some(p) = daizo_core::path_resolver::resolve_tipitaka_path_direct(id) {
+            return p;
+        }
+        // フォールバック: インデックスから検索
         let idx = load_or_build_tipitaka_index_cli();
         if let Some(p) = resolve_tipitaka_by_id(&idx, id) {
             return p;
@@ -1440,6 +1456,11 @@ pub(crate) fn resolve_tipitaka_path(id: Option<&str>, query: Option<&str>) -> Pa
         // strict filename fallback
         if let Some(p) = find_exact_file_by_name(&tipitaka_root(), &format!("{}.xml", id)) {
             return p;
+        }
+    } else if let Some(q) = query {
+        let idx = load_or_build_tipitaka_index_cli();
+        if let Some(hit) = best_match(&idx, q, 1).into_iter().next() {
+            return PathBuf::from(&hit.entry.path);
         }
     }
     PathBuf::new()
@@ -1461,12 +1482,17 @@ pub(crate) fn resolve_cbeta_path_cli(id: Option<&str>, query: Option<&str>) -> P
 }
 
 pub(crate) fn resolve_gretil_path_cli(id: Option<&str>, query: Option<&str>) -> PathBuf {
-    if let Some(id) = id {
-        let idx = load_or_build_gretil_index_cli();
-        if let Some(p) = resolve_gretil_by_id(&idx, id) {
+    if let Some(id_str) = id {
+        // 直接パス解決を最初に試行（インデックスロード不要で最速）
+        if let Some(p) = resolve_gretil_path_direct(id_str) {
             return p;
         }
-        if let Some(p) = find_exact_file_by_name(&gretil_root(), &format!("{}.xml", id)) {
+        // フォールバック: インデックスベースの解決
+        let idx = load_or_build_gretil_index_cli();
+        if let Some(p) = resolve_gretil_by_id(&idx, id_str) {
+            return p;
+        }
+        if let Some(p) = find_exact_file_by_name(&gretil_root(), &format!("{}.xml", id_str)) {
             return p;
         }
     } else if let Some(q) = query {

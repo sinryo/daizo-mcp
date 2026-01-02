@@ -192,11 +192,11 @@ fn handle_initialize(id: serde_json::Value) -> serde_json::Value {
 
 fn tools_list() -> Vec<serde_json::Value> {
     vec![
-        tool("daizo_usage", "Usage guidance for AI: low-token workflow (search->_meta.fetchSuggestions->fetch). Avoid pipeline by default.", json!({"type":"object","properties":{}})),
-        tool("cbeta_fetch", "Retrieve CBETA text by ID/part; supports low-cost slices via id+lineNumber (follow cbeta_search _meta.fetchSuggestions)", json!({"type":"object","properties":{
-            "id":{"type":"string"},
-            "query":{"type":"string"},
-            "part":{"type":"string"},
+        tool("daizo_usage", "Usage guidance for AI: FAST PATH - use direct IDs! CBETA: T0001, T0262 (cbeta_fetch). Tipitaka: DN1, MN1 (tipitaka_fetch). GRETIL: saddharmapuNDarIka, vajracchedikA (gretil_fetch). No search needed when ID is known!", json!({"type":"object","properties":{}})),
+        tool("cbeta_fetch", "Retrieve CBETA text by ID/part. FAST: If Taisho number is known (e.g. T0001, T0262 for Lotus Sutra), use id directly without search. Supports low-cost slices via id+lineNumber. TIP: Always pass 'highlight' with search term when using lineNumber!", json!({"type":"object","properties":{
+            "id":{"type":"string","description":"Taisho number (e.g. T0001, T0262). Use this directly if known - much faster than query!"},
+            "query":{"type":"string","description":"Fuzzy title search (slower). Prefer id if Taisho number is known."},
+            "part":{"type":"string","description":"Juan/part number (e.g. '001'). Use for long texts."},
             "includeNotes":{"type":"boolean"},
             "full":{"type":"boolean","description":"Return full text without slicing"},
             "highlight":{"type":"string","description":"Highlight string or regex pattern (used with lineNumber-based context)"},
@@ -211,12 +211,12 @@ fn tools_list() -> Vec<serde_json::Value> {
             "contextAfter":{"type":"number","description":"Number of lines after target line (default: 100)"},
             "contextLines":{"type":"number","description":"Number of lines before/after target line (deprecated, use contextBefore/contextAfter)"}
         }})),
-        tool("cbeta_search", "Fast regex search over CBETA; returns _meta.fetchSuggestions (use cbeta_fetch with id+lineNumber) and _meta.pipelineHint for low-cost next steps", json!({"type":"object","properties":{
+        tool("cbeta_search", "Fast regex search over CBETA; returns _meta.fetchSuggestions (use cbeta_fetch with id+lineNumber+highlight). IMPORTANT: When fetching, always include highlight param with search term!", json!({"type":"object","properties":{
             "query":{"type":"string","description":"Regular expression pattern to search for"},
             "maxResults":{"type":"number","description":"Maximum number of files to return (default: 20)"},
             "maxMatchesPerFile":{"type":"number","description":"Maximum matches per file (default: 5)"}
         },"required":["query"]})),
-        tool("cbeta_title_search", "Title-based search in CBETA corpus", json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"}},"required":["query"]})),
+        tool("cbeta_title_search", "Title-based search in CBETA corpus. Note: If Taisho number is already known (e.g. T0262), skip search and use cbeta_fetch directly with id!", json!({"type":"object","properties":{"query":{"type":"string","description":"Title to search. If you already know Taisho number, use cbeta_fetch with id instead."},"limit":{"type":"number"}},"required":["query"]})),
         tool("cbeta_pipeline", "CBETA summarize/context pipeline; set autoFetch=false for summary-only (see cbeta_search _meta.pipelineHint)", json!({"type":"object","properties":{
             "query":{"type":"string"},
             "maxResults":{"type":"number"},
@@ -262,9 +262,9 @@ fn tools_list() -> Vec<serde_json::Value> {
             "fq":{"type":"array","items":{"type":"string"}},
             "autoFetch":{"type":"boolean"}
         },"required":["query"]})),
-        tool("tipitaka_fetch", "Retrieve Tipitaka by ID/section; supports low-cost slices via id+lineNumber (follow tipitaka_search _meta.fetchSuggestions)", json!({"type":"object","properties":{
-            "id":{"type":"string"},
-            "query":{"type":"string"},
+        tool("tipitaka_fetch", "Retrieve Tipitaka text. FAST: Use Nikāya codes directly (DN, MN, SN, AN, KN) without search. Examples: DN1, MN1, SN1, AN1. Or use file stems like s0101m.mul.", json!({"type":"object","properties":{
+            "id":{"type":"string","description":"Nikāya code (DN, MN, SN, AN, KN) with optional number (e.g., DN1, MN1) or file stem (e.g., s0101m.mul). Use directly for fast access!"},
+            "query":{"type":"string","description":"Fuzzy title search (slower). Prefer id if Nikāya code is known."},
             "headIndex":{"type":"number"},
             "headQuery":{"type":"string"},
             "headingsLimit":{"type":"number"},
@@ -282,20 +282,20 @@ fn tools_list() -> Vec<serde_json::Value> {
             "contextAfter":{"type":"number","description":"Number of lines after target line (default: 100)"},
             "contextLines":{"type":"number","description":"Number of lines before/after target line (deprecated, use contextBefore/contextAfter)"}
         }})),
-        tool("tipitaka_search", "Fast regex search over Tipitaka; returns _meta.fetchSuggestions (use tipitaka_fetch with id+lineNumber) for low-cost next steps", json!({"type":"object","properties":{
+        tool("tipitaka_search", "Fast regex search over Tipitaka; returns _meta.fetchSuggestions (use tipitaka_fetch with id+lineNumber+highlight). Always include highlight param when fetching!", json!({"type":"object","properties":{
             "query":{"type":"string","description":"Regular expression pattern to search for"},
             "maxResults":{"type":"number","description":"Maximum number of files to return (default: 20)"},
             "maxMatchesPerFile":{"type":"number","description":"Maximum matches per file (default: 5)"}
         },"required":["query"]})),
-        tool("tipitaka_title_search", "Title-based search in Tipitaka corpus", json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"}},"required":["query"]})),
+        tool("tipitaka_title_search", "Title-based search in Tipitaka corpus. Note: If Nikāya code is known (DN, MN, SN, AN, KN), skip search and use tipitaka_fetch directly with id!", json!({"type":"object","properties":{"query":{"type":"string","description":"Title to search. If you know Nikāya code, use tipitaka_fetch with id instead."},"limit":{"type":"number"}},"required":["query"]})),
         // GRETIL (Sanskrit TEI)
-        tool("gretil_title_search", "Title-based search in GRETIL corpus", json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"}},"required":["query"]})),
-        tool("gretil_search", "Fast regex search over GRETIL; returns _meta.fetchSuggestions (use gretil_fetch with id+lineNumber) and _meta.pipelineHint for low-cost next steps", json!({"type":"object","properties":{
+        tool("gretil_title_search", "Title-based search in GRETIL corpus. Note: If text name is known, skip search and use gretil_fetch directly with id!", json!({"type":"object","properties":{"query":{"type":"string","description":"Title to search. If you know the file stem (e.g., 'saddharmapuNDarIka'), use gretil_fetch with id instead."},"limit":{"type":"number"}},"required":["query"]})),
+        tool("gretil_search", "Fast regex search over GRETIL; returns _meta.fetchSuggestions (use gretil_fetch with id+lineNumber+highlight). Always include highlight param when fetching!", json!({"type":"object","properties":{
             "query":{"type":"string","description":"Regular expression pattern to search for"},
             "maxResults":{"type":"number","description":"Maximum number of files to return (default: 20)"},
             "maxMatchesPerFile":{"type":"number","description":"Maximum matches per file (default: 5)"}
         },"required":["query"]})),
-        tool("gretil_fetch", "Retrieve GRETIL by ID; supports low-cost slices via id+lineNumber (follow gretil_search _meta.fetchSuggestions)", json!({"type":"object","properties":{
+        tool("gretil_fetch", "Retrieve GRETIL Sanskrit text by ID. FAST ACCESS: Use id directly (e.g., 'saddharmapuNDarIka', 'vajracchedikA', 'prajJApAramitAhRdayasUtra'). File stems follow sa_<textname>.xml pattern; you can omit 'sa_' prefix.", json!({"type":"object","properties":{
             "id":{"type":"string"},
             "query":{"type":"string"},
             "includeNotes":{"type":"boolean"},
@@ -344,21 +344,43 @@ fn handle_tools_list(id: serde_json::Value) -> serde_json::Value {
 
 // normalization and token similarity helpers are provided by daizo_core::text_utils
 
+// メモリキャッシュ: プロセス内でインデックスを再利用し、毎回のJSONパースを回避
+static CBETA_INDEX_CACHE: OnceLock<Vec<IndexEntry>> = OnceLock::new();
+
 fn load_or_build_cbeta_index() -> Vec<IndexEntry> {
+    // メモリキャッシュから取得（最速）
+    if let Some(cached) = CBETA_INDEX_CACHE.get() {
+        return cached.clone();
+    }
+
     let out = cache_dir().join("cbeta-index.json");
     if let Some(v) = load_index(&out) {
         // 既存インデックスの健全性を軽くチェック（パスの存在 + メタの有無）
         let missing = v.iter().take(10).filter(|e| !Path::new(&e.path).exists()).count();
         let lacks_meta = v.iter().take(10).any(|e| e.meta.is_none());
-        if v.is_empty() || missing > 0 || lacks_meta { /* 再生成へ */ } else { return v; }
+        if v.is_empty() || missing > 0 || lacks_meta { /* 再生成へ */ } else {
+            // キャッシュに保存
+            let _ = CBETA_INDEX_CACHE.set(v.clone());
+            return v;
+        }
     }
     // Ensure data exists (clone if needed)
     ensure_cbeta_data();
     let entries = build_cbeta_index(&cbeta_root());
     let _ = save_index(&out, &entries);
+    // キャッシュに保存
+    let _ = CBETA_INDEX_CACHE.set(entries.clone());
     entries
 }
+// メモリキャッシュ: Tipitakaインデックス
+static TIPITAKA_INDEX_CACHE: OnceLock<Vec<IndexEntry>> = OnceLock::new();
+
 fn load_or_build_tipitaka_index() -> Vec<IndexEntry> {
+    // メモリキャッシュから取得（最速）
+    if let Some(cached) = TIPITAKA_INDEX_CACHE.get() {
+        return cached.clone();
+    }
+
     let out = cache_dir().join("tipitaka-index.json");
     if let Some(mut v) = load_index(&out) {
         v.retain(|e| !e.path.ends_with(".toc.xml"));
@@ -374,22 +396,40 @@ fn load_or_build_tipitaka_index() -> Vec<IndexEntry> {
             }
             false
         });
-        if v.is_empty() || missing > 0 || lacks_meta || lacks_heads || lacks_composite { /* 再生成へ */ } else { return v; }
+        if v.is_empty() || missing > 0 || lacks_meta || lacks_heads || lacks_composite { /* 再生成へ */ } else {
+            let _ = TIPITAKA_INDEX_CACHE.set(v.clone());
+            return v;
+        }
     }
     ensure_tipitaka_data();
     let mut entries = build_tipitaka_index(&tipitaka_root());
     entries.retain(|e| !e.path.ends_with(".toc.xml"));
     let _ = save_index(&out, &entries);
+    // キャッシュに保存
+    let _ = TIPITAKA_INDEX_CACHE.set(entries.clone());
     entries
 }
+// メモリキャッシュ: GRETILインデックス
+static GRETIL_INDEX_CACHE: OnceLock<Vec<IndexEntry>> = OnceLock::new();
+
 fn load_or_build_gretil_index() -> Vec<IndexEntry> {
+    // メモリキャッシュから取得（最速）
+    if let Some(cached) = GRETIL_INDEX_CACHE.get() {
+        return cached.clone();
+    }
+
     let out = cache_dir().join("gretil-index.json");
     if let Some(v) = load_index(&out) {
         let missing = v.iter().take(10).filter(|e| !Path::new(&e.path).exists()).count();
-        if v.is_empty() || missing > 0 { /* rebuild */ } else { return v; }
+        if v.is_empty() || missing > 0 { /* rebuild */ } else {
+            let _ = GRETIL_INDEX_CACHE.set(v.clone());
+            return v;
+        }
     }
     let entries = build_gretil_index(&gretil_root());
     let _ = save_index(&out, &entries);
+    // キャッシュに保存
+    let _ = GRETIL_INDEX_CACHE.set(entries.clone());
     entries
 }
 
@@ -507,7 +547,7 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
     let content_text = match name {
         "daizo_usage" => {
-            let guide = "Low-token guide:\n\n- Use search -> read _meta.fetchSuggestions\n- Then call *_fetch with {id, lineNumber, contextBefore:1, contextAfter:3}\n- Use *_pipeline only for multi-file summary; set autoFetch=false by default\n- Search tools may also provide _meta.pipelineHint\n- Control number of suggestions via DAIZO_HINT_TOP (default 1)";
+            let guide = "Daizo usage guide:\n\n## FASTEST: Direct ID access (no search needed!)\n\n### CBETA (Chinese Buddhist Canon)\nIf you know the Taisho number, use cbeta_fetch with id directly:\n- T0001 = 長阿含經 (Dirghagama)\n- T0099 = 雜阿含經 (Samyuktagama)\n- T0125 = 增壹阿含經 (Ekottaragama)\n- T0262 = 妙法蓮華經 (Lotus Sutra)\n- T0235 = 金剛般若波羅蜜經 (Diamond Sutra)\n- T0251 = 般若波羅蜜多心經 (Heart Sutra)\n- T0945 = 大佛頂首楞嚴經 (Shurangama Sutra)\n- T2076 = 景德傳燈錄\n\nExample: cbeta_fetch({id: \"T0262\"}) - instant!\n\n### Tipitaka (Pāli Canon)\nUse Nikāya codes directly with tipitaka_fetch:\n- DN = Dīghanikāya (長部) - e.g., DN1, DN2\n- MN = Majjhimanikāya (中部) - e.g., MN1, MN2\n- SN = Saṃyuttanikāya (相応部) - e.g., SN1\n- AN = Aṅguttaranikāya (増支部) - e.g., AN1\n- KN = Khuddakanikāya (小部)\n\nExamples:\n- tipitaka_fetch({id: \"DN1\"}) - Brahmajāla Sutta (梵網経)\n- tipitaka_fetch({id: \"MN1\"}) - Mūlapariyāya Sutta\n- tipitaka_fetch({id: \"s0101m.mul\"}) - Direct file access\n\n### GRETIL (Sanskrit Texts)\nUse file stem directly with gretil_fetch:\n- saddharmapuNDarIka = 法華經 (Lotus Sutra)\n- vajracchedikA = 金剛般若經 (Diamond Sutra)\n- prajJApAramitAhRdayasUtra = 般若心經 (Heart Sutra)\n- azvaghoSa-buddhacarita = 佛所行讚 (Buddhacarita)\n- laGkAvatArasUtra = 楞伽經 (Lankavatara Sutra)\n- mahAparinirvANasUtra = 大般涅槃經 (Mahaparinirvana Sutra)\n\nExamples:\n- gretil_fetch({id: \"saddharmapuNDarIka\"}) - Lotus Sutra Sanskrit\n- gretil_fetch({id: \"vajracchedikA\"}) - Diamond Sutra Sanskrit\n- gretil_fetch({id: \"sa_azvaghoSa-buddhacarita\"}) - with sa_ prefix also works\n\n## Standard flow (when ID unknown)\n1. Use *_search -> read _meta.fetchSuggestions\n2. Call *_fetch with {id, lineNumber, contextBefore:3, contextAfter:10, highlight: \"検索語\"}\n3. IMPORTANT: Always include 'highlight' parameter with the search term!\n   - If lineNumber doesn't show expected text, the highlight ensures correct context\n   - Example: cbeta_fetch({id:\"T0279\", lineNumber:1650, highlight:\"金剛杵\", contextBefore:5, contextAfter:10})\n4. Use *_pipeline only for multi-file summary; set autoFetch=false by default\n\n## Troubleshooting: If lineNumber doesn't work\n- ALWAYS pass 'highlight' param with search term for verification\n- Use larger contextBefore/contextAfter (e.g., 10-20 lines)\n- For very long texts, use part/juan parameter instead: cbeta_fetch({id:\"T0279\", part:\"001\"})";
             return json!({
                 "jsonrpc":"2.0",
                 "id": id,
@@ -558,16 +598,25 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
             let mut matched_title: Option<String> = None;
             let mut matched_score: Option<f32> = None;
             let mut path: PathBuf = PathBuf::new();
-            // 修正: IDがある場合は優先してqueryを無視
+            // 高速化: IDが指定されている場合は直接パス解決を試み、インデックスのロードを回避
             if let Some(id) = args.get("id").and_then(|v| v.as_str()) {
-                let idx = load_or_build_cbeta_index();
-                if let Some(hit) = idx.iter().find(|e| e.id == id) {
-                    matched_id = Some(hit.id.clone());
-                    matched_title = Some(hit.title.clone());
-                    path = PathBuf::from(&hit.path);
-                } else {
-                    path = resolve_cbeta_path_by_id(id).unwrap_or_else(|| PathBuf::from(""));
+                // まず直接パス解決を試みる（インデックス不要、高速）
+                if let Some(direct_path) = daizo_core::path_resolver::resolve_cbeta_path_direct(id) {
                     matched_id = Some(id.to_string());
+                    path = direct_path;
+                    // タイトルは後でインデックスから取得（オプショナル、遅延ロード）
+                } else {
+                    // フォールバック: インデックスから検索
+                    let idx = load_or_build_cbeta_index();
+                    if let Some(hit) = idx.iter().find(|e| e.id == id) {
+                        matched_id = Some(hit.id.clone());
+                        matched_title = Some(hit.title.clone());
+                        path = PathBuf::from(&hit.path);
+                    } else {
+                        // 最終フォールバック: WalkDir検索
+                        path = resolve_cbeta_path_by_id(id).unwrap_or_else(|| PathBuf::from(""));
+                        matched_id = Some(id.to_string());
+                    }
                 }
             } else if let Some(q) = args.get("query").and_then(|v| v.as_str()) {
                 let idx = load_or_build_cbeta_index();
@@ -683,18 +732,24 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
             let mut matched_id: Option<String> = None;
             let mut matched_title: Option<String> = None;
             let mut matched_score: Option<f32> = None;
-            // 修正: IDがある場合は優先してqueryを無視
+            // 高速化: IDが指定されている場合は直接パス解決を試み、インデックスのロードを回避
             let mut path: PathBuf = if let Some(id) = args.get("id").and_then(|v| v.as_str()) {
-                let idx = load_or_build_tipitaka_index();
-                if let Some(p) = resolve_tipitaka_by_id(&idx, id) {
-                    // fill matched info from the resolved path
-                    matched_id = Path::new(&p).file_stem().map(|s| s.to_string_lossy().into_owned());
-                    if let Some(e) = idx.iter().find(|e| e.path == p.to_string_lossy()) {
-                        matched_title = Some(e.title.clone());
-                    }
-                    p
+                // まず直接パス解決を試みる（インデックス不要、高速）
+                if let Some(direct_path) = daizo_core::path_resolver::resolve_tipitaka_path_direct(id) {
+                    matched_id = Path::new(&direct_path).file_stem().map(|s| s.to_string_lossy().into_owned());
+                    direct_path
                 } else {
-                    PathBuf::new()
+                    // フォールバック: インデックスから検索
+                    let idx = load_or_build_tipitaka_index();
+                    if let Some(p) = resolve_tipitaka_by_id(&idx, id) {
+                        matched_id = Path::new(&p).file_stem().map(|s| s.to_string_lossy().into_owned());
+                        if let Some(e) = idx.iter().find(|e| e.path == p.to_string_lossy()) {
+                            matched_title = Some(e.title.clone());
+                        }
+                        p
+                    } else {
+                        PathBuf::new()
+                    }
                 }
             } else if let Some(q) = args.get("query").and_then(|v| v.as_str()) {
                 let idx = load_or_build_tipitaka_index();
@@ -1218,12 +1273,25 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
             let mut matched_title: Option<String> = None;
             let mut matched_score: Option<f32> = None;
             let mut path: PathBuf = PathBuf::new();
-            if let Some(id) = args.get("id").and_then(|v| v.as_str()) {
-                let idx = load_or_build_gretil_index();
-                if let Some(p) = daizo_core::path_resolver::resolve_gretil_by_id(&idx, id) {
-                    matched_id = Path::new(&p).file_stem().map(|s| s.to_string_lossy().into_owned());
-                    if let Some(e) = idx.iter().find(|e| e.path == p.to_string_lossy()) { matched_title = Some(e.title.clone()); }
-                    path = p;
+            if let Some(id_str) = args.get("id").and_then(|v| v.as_str()) {
+                // 直接パス解決を最初に試行（インデックスロード不要で最速）
+                if let Some(p) = daizo_core::path_resolver::resolve_gretil_path_direct(id_str) {
+                    path = p.clone();
+                    matched_id = Some(id_str.to_string());
+                    // タイトルはキャッシュがあれば取得（なくても問題なし）
+                    if let Some(idx) = GRETIL_INDEX_CACHE.get() {
+                        if let Some(e) = idx.iter().find(|e| Path::new(&e.path) == &p) {
+                            matched_title = Some(e.title.clone());
+                        }
+                    }
+                } else {
+                    // フォールバック: インデックスベースの解決
+                    let idx = load_or_build_gretil_index();
+                    if let Some(p) = daizo_core::path_resolver::resolve_gretil_by_id(&idx, id_str) {
+                        matched_id = Path::new(&p).file_stem().map(|s| s.to_string_lossy().into_owned());
+                        if let Some(e) = idx.iter().find(|e| e.path == p.to_string_lossy()) { matched_title = Some(e.title.clone()); }
+                        path = p;
+                    }
                 }
             } else if let Some(q) = args.get("query").and_then(|v| v.as_str()) {
                 let idx = load_or_build_gretil_index();

@@ -6,6 +6,7 @@
 
 ## 亮點
 
+- **直接 ID 存取**：已知文本 ID 時可即時取得（最快！）
 - CBETA / Tipitaka / GRETIL 文字內容快速正則搜尋（附行號）
 - 標題搜尋（CBETA / Tipitaka / GRETIL）
 - 以行號或字元範圍精準擷取上下文
@@ -46,7 +47,28 @@ command = "/Users/you/.daizo/bin/daizo-mcp"
 
 ## CLI 範例
 
-搜尋：
+### 直接 ID 存取（最快！）
+
+已知文本 ID 時，跳過搜尋直接取得：
+
+```bash
+# CBETA：大正藏號（T + 4 位數字）
+daizo-cli cbeta-fetch --id T0001      # 長阿含經
+daizo-cli cbeta-fetch --id T0262      # 妙法蓮華經
+daizo-cli cbeta-fetch --id T0235      # 金剛般若波羅蜜經
+
+# Tipitaka：尼柯耶代碼（DN, MN, SN, AN, KN）
+daizo-cli tipitaka-fetch --id DN1     # 梵網經
+daizo-cli tipitaka-fetch --id MN1     # 根本法門經
+daizo-cli tipitaka-fetch --id SN1     # 相應部第一
+
+# GRETIL：梵文文本名稱
+daizo-cli gretil-fetch --id saddharmapuNDarIka         # 法華經（梵文）
+daizo-cli gretil-fetch --id vajracchedikA              # 金剛般若經（梵文）
+daizo-cli gretil-fetch --id prajJApAramitAhRdayasUtra  # 般若心經（梵文）
+```
+
+### 搜尋
 
 ```bash
 # 標題搜尋
@@ -59,20 +81,20 @@ daizo-cli tipitaka-search --query "nibbana|vipassana" --max-results 15
 daizo-cli gretil-search --query "yoga" --max-results 10
 ```
 
-取得：
+### 附上下文取得
 
 ```bash
-# 依 ID 取得
+# 依 ID 取得（附選項）
 daizo-cli cbeta-fetch --id T0858 --part 1 --max-chars 4000 --json
-daizo-cli tipitaka-fetch --id e0101n.mul --max-chars 2000 --json
-daizo-cli gretil-fetch --query "Bhagavadgita" --max-chars 4000 --json
+daizo-cli tipitaka-fetch --id s0101m.mul --max-chars 2000 --json
+daizo-cli gretil-fetch --id buddhacarita --max-chars 4000 --json
 
 # 行號上下文（搜尋後）
 daizo-cli cbeta-fetch --id T0858 --line-number 342 --context-before 10 --context-after 200
 daizo-cli tipitaka-fetch --id s0305m.mul --line-number 158 --context-before 5 --context-after 100
 ```
 
-管理：
+### 管理
 
 ```bash
 daizo-cli init                      # 首次設定（下載資料、建立索引）
@@ -98,9 +120,44 @@ daizo-cli update --yes              # 重新安裝 CLI
 
 ## 低代幣用法（AI 用戶端）
 
-- 預設流程：`*_search` → 讀取 `_meta.fetchSuggestions` → 以 `{ id, lineNumber, contextBefore:1, contextAfter:3 }` 呼叫 `*_fetch`。
-- 僅在需要多檔案摘要時使用 `*_pipeline`，且預設 `autoFetch=false`。搜尋工具也提供 `_meta.pipelineHint`。
-- 工具描述中已標示此指引；`initialize` 亦提供 `prompts.low-token-guide` 以提示用法。
+### 最快：直接 ID 存取
+
+已知文本 ID 時，**跳過搜尋**：
+
+| 語料庫 | ID 格式 | 範例 |
+|--------|---------|------|
+| CBETA | `T` + 4 位數字 | `cbeta_fetch({id: "T0262"})` |
+| Tipitaka | `DN`, `MN`, `SN`, `AN`, `KN` + 數字 | `tipitaka_fetch({id: "DN1"})` |
+| GRETIL | 梵文文本名稱 | `gretil_fetch({id: "saddharmapuNDarIka"})` |
+
+### 常用 ID 參考
+
+**CBETA（中文大藏經）**：
+- T0001 = 長阿含經
+- T0099 = 雜阿含經
+- T0262 = 妙法蓮華經（法華經）
+- T0235 = 金剛般若波羅蜜經（金剛經）
+- T0251 = 般若波羅蜜多心經（心經）
+
+**Tipitaka（巴利三藏）**：
+- DN1-DN34 = 長部（Dīghanikāya）
+- MN1-MN152 = 中部（Majjhimanikāya）
+- SN = 相應部（Saṃyuttanikāya）
+- AN = 增支部（Aṅguttaranikāya）
+
+**GRETIL（梵文）**：
+- saddharmapuNDarIka = 法華經
+- vajracchedikA = 金剛般若經
+- prajJApAramitAhRdayasUtra = 般若心經
+- buddhacarita = 佛所行讚（馬鳴）
+
+### 標準流程（ID 未知時）
+
+1. 使用 `*_search` → 讀取 `_meta.fetchSuggestions`
+2. 以 `{ id, lineNumber, contextBefore:1, contextAfter:3 }` 呼叫 `*_fetch`
+3. 僅在需要多檔案摘要時使用 `*_pipeline`，且預設 `autoFetch=false`
+
+工具描述中已標示此指引；`initialize` 亦提供 `prompts.low-token-guide` 以提示用法。
 
 提示：以 `DAIZO_HINT_TOP` 控制建議數量（預設 1）。
 
@@ -114,7 +171,7 @@ daizo-cli update --yes              # 重新安裝 CLI
 ## 目錄與環境變數
 
 - `DAIZO_DIR`（預設：`~/.daizo`）
-  - 資料：`xml-p5/`, `tipitaka-xml/romn/`
+  - 資料：`xml-p5/`, `tipitaka-xml/romn/`, `GRETIL/`
   - 快取：`cache/`
   - 二進位：`bin/`
 - `DAIZO_DEBUG=1` 啟用簡易 MCP 除錯日誌
@@ -122,14 +179,32 @@ daizo-cli update --yes              # 重新安裝 CLI
 - 取得策略（頻率/robots）：
   - `DAIZO_REPO_MIN_DELAY_MS`, `DAIZO_REPO_USER_AGENT`, `DAIZO_REPO_RESPECT_ROBOTS`
 
-## 版本釋出輔助
+## 腳本
 
-- 腳本：`scripts/release.sh`
-- 範例：
-  - 全自動（bump → commit → tag → push → GitHub 釋出，自動筆記）: `scripts/release.sh 0.3.3 --all`
-  - 使用 CHANGELOG 筆記：`scripts/release.sh 0.3.3 --push --release`
-  - 模擬執行：`scripts/release.sh 0.3.3 --all --dry-run`
+| 腳本 | 用途 |
+|------|------|
+| `scripts/bootstrap.sh` | 一鍵安裝：檢查依賴 → clone 倉庫 → 執行 install.sh → 自動註冊 MCP |
+| `scripts/install.sh` | 主安裝程式：建置 → 安裝二進位 → 下載 GRETIL → 重建索引 |
+| `scripts/link-binaries.sh` | 開發用：建立指向 release 二進位的符號連結 |
+| `scripts/release.sh` | 釋出用：版本升級 → 建立標籤 → GitHub Release |
+
+### 版本釋出範例
+
+```bash
+# 全自動（bump → commit → tag → push → GitHub 釋出，自動筆記）
+scripts/release.sh 0.3.3 --all
+
+# 使用 CHANGELOG 筆記
+scripts/release.sh 0.3.3 --push --release
+
+# 模擬執行
+scripts/release.sh 0.3.3 --all --dry-run
+```
 
 ## 授權
 
 MIT 或 Apache-2.0 © 2025 Shinryo Taniguchi
+
+## 貢獻
+
+歡迎 Issue 與 PR。提交 bug 報告時請附上 `daizo-cli doctor --verbose` 輸出。

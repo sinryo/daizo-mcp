@@ -6,6 +6,7 @@ See also: [日本語 README](README.ja.md) | [繁體中文 README](README.zh-TW.
 
 ## Highlights
 
+- **Direct ID Access**: Instant retrieval when you know the text ID (fastest path!)
 - Fast regex/content search with line numbers (CBETA/Tipitaka/GRETIL)
 - Title search across CBETA, Tipitaka, and GRETIL indices
 - Precise context fetching by line number or character range
@@ -46,7 +47,28 @@ command = "/Users/you/.daizo/bin/daizo-mcp"
 
 ## CLI Examples
 
-Search:
+### Direct ID Access (Fastest!)
+
+When you know the text ID, skip search entirely:
+
+```bash
+# CBETA: Taisho number (T + 4-digit number)
+daizo-cli cbeta-fetch --id T0001      # 長阿含經
+daizo-cli cbeta-fetch --id T0262      # 妙法蓮華經 (Lotus Sutra)
+daizo-cli cbeta-fetch --id T0235      # 金剛般若波羅蜜經 (Diamond Sutra)
+
+# Tipitaka: Nikāya codes (DN, MN, SN, AN, KN)
+daizo-cli tipitaka-fetch --id DN1     # Brahmajāla Sutta
+daizo-cli tipitaka-fetch --id MN1     # Mūlapariyāya Sutta
+daizo-cli tipitaka-fetch --id SN1     # First Saṃyutta
+
+# GRETIL: Sanskrit text names
+daizo-cli gretil-fetch --id saddharmapuNDarIka         # Lotus Sutra (Sanskrit)
+daizo-cli gretil-fetch --id vajracchedikA              # Diamond Sutra (Sanskrit)
+daizo-cli gretil-fetch --id prajJApAramitAhRdayasUtra  # Heart Sutra (Sanskrit)
+```
+
+### Search
 
 ```bash
 # Title search
@@ -59,20 +81,20 @@ daizo-cli tipitaka-search --query "nibbana|vipassana" --max-results 15
 daizo-cli gretil-search --query "yoga" --max-results 10
 ```
 
-Fetch:
+### Fetch with Context
 
 ```bash
-# Fetch by ID
+# Fetch by ID with options
 daizo-cli cbeta-fetch --id T0858 --part 1 --max-chars 4000 --json
-daizo-cli tipitaka-fetch --id e0101n.mul --max-chars 2000 --json
-daizo-cli gretil-fetch --query "Bhagavadgita" --max-chars 4000 --json
+daizo-cli tipitaka-fetch --id s0101m.mul --max-chars 2000 --json
+daizo-cli gretil-fetch --id buddhacarita --max-chars 4000 --json
 
 # Context around a line (after search)
 daizo-cli cbeta-fetch --id T0858 --line-number 342 --context-before 10 --context-after 200
 daizo-cli tipitaka-fetch --id s0305m.mul --line-number 158 --context-before 5 --context-after 100
 ```
 
-Admin:
+### Admin
 
 ```bash
 daizo-cli init                      # first-time setup (downloads data, builds indexes)
@@ -98,9 +120,44 @@ Fetch:
 
 ## Low-Token Guide (AI clients)
 
-- Default flow: `*_search` → read `_meta.fetchSuggestions` → call `*_fetch` with `{ id, lineNumber, contextBefore:1, contextAfter:3 }`.
-- Use `*_pipeline` only when you need a multi-file summary; set `autoFetch=false` by default. Search tools also provide `_meta.pipelineHint`.
-- Tool descriptions mention these hints; `initialize` also exposes a `prompts.low-token-guide` entry for clients.
+### Fastest: Direct ID Access
+
+When the text ID is known, **skip search entirely**:
+
+| Corpus | ID Format | Example |
+|--------|-----------|---------|
+| CBETA | `T` + 4-digit number | `cbeta_fetch({id: "T0262"})` |
+| Tipitaka | `DN`, `MN`, `SN`, `AN`, `KN` + number | `tipitaka_fetch({id: "DN1"})` |
+| GRETIL | Sanskrit text name | `gretil_fetch({id: "saddharmapuNDarIka"})` |
+
+### Common IDs Reference
+
+**CBETA (Chinese Canon)**:
+- T0001 = 長阿含經 (Dīrghāgama)
+- T0099 = 雜阿含經 (Saṃyuktāgama)
+- T0262 = 妙法蓮華經 (Lotus Sutra)
+- T0235 = 金剛般若波羅蜜經 (Diamond Sutra)
+- T0251 = 般若波羅蜜多心經 (Heart Sutra)
+
+**Tipitaka (Pāli Canon)**:
+- DN1-DN34 = Dīghanikāya (長部)
+- MN1-MN152 = Majjhimanikāya (中部)
+- SN = Saṃyuttanikāya (相応部)
+- AN = Aṅguttaranikāya (増支部)
+
+**GRETIL (Sanskrit)**:
+- saddharmapuNDarIka = Lotus Sutra
+- vajracchedikA = Diamond Sutra
+- prajJApAramitAhRdayasUtra = Heart Sutra
+- buddhacarita = Buddhacarita (Aśvaghoṣa)
+
+### Standard Flow (when ID unknown)
+
+1. Use `*_search` → read `_meta.fetchSuggestions`
+2. Call `*_fetch` with `{ id, lineNumber, contextBefore:1, contextAfter:3 }`
+3. Use `*_pipeline` only when you need a multi-file summary; set `autoFetch=false` by default
+
+Tool descriptions mention these hints; `initialize` also exposes a `prompts.low-token-guide` entry for clients.
 
 Tip: Control number of suggestions via `DAIZO_HINT_TOP` (default 1).
 
@@ -114,7 +171,7 @@ Tip: Control number of suggestions via `DAIZO_HINT_TOP` (default 1).
 ## Directories and Env
 
 - `DAIZO_DIR` (default: `~/.daizo`)
-  - data: `xml-p5/`, `tipitaka-xml/romn/`
+  - data: `xml-p5/`, `tipitaka-xml/romn/`, `GRETIL/`
   - cache: `cache/`
   - binaries: `bin/`
 - `DAIZO_DEBUG=1` enables minimal MCP debug log
@@ -122,29 +179,27 @@ Tip: Control number of suggestions via `DAIZO_HINT_TOP` (default 1).
 - Repo policy envs (for robots/rate-limits):
   - `DAIZO_REPO_MIN_DELAY_MS`, `DAIZO_REPO_USER_AGENT`, `DAIZO_REPO_RESPECT_ROBOTS`
 
-## Release Helper
+## Scripts
 
-- Script: `scripts/release.sh`
-- Examples:
-  - Auto (bump → commit → tag → push → GitHub release with auto-notes): `scripts/release.sh 0.3.3 --all`
-  - CHANGELOG notes instead of auto-notes: `scripts/release.sh 0.3.3 --push --release`
-  - Dry run: `scripts/release.sh 0.3.3 --all --dry-run`
+| Script | Purpose |
+|--------|---------|
+| `scripts/bootstrap.sh` | One-liner installer: checks deps → clones repo → runs install.sh → auto-registers MCP |
+| `scripts/install.sh` | Main installer: builds → installs binaries → downloads GRETIL → rebuilds indexes |
+| `scripts/link-binaries.sh` | Dev helper: creates symlinks to release binaries in repo root |
+| `scripts/release.sh` | Release helper: version bump → tag → GitHub release |
 
-## License
+### Release Helper Examples
 
-MIT OR Apache-2.0 © 2025 Shinryo Taniguchi
-- **Smart Retrieval**: Context-aware text extraction with fetch hints and flexible line-based context
-- **Search & Focus**: Find content, then retrieve customizable context (e.g., 10 lines before, 200 after)
-- **Multiple Formats**: Support for TEI P5 XML, plain text, and structured data
-- **Automatic Data Management**: Downloads and updates text repositories automatically
-- **Caching**: Intelligent caching for online queries
+```bash
+# Auto (bump → commit → tag → push → GitHub release with auto-notes)
+scripts/release.sh 0.3.3 --all
 
-## Environment
+# CHANGELOG notes instead of auto-notes
+scripts/release.sh 0.3.3 --push --release
 
-- **DAIZO_DIR**: Base directory (default: ~/.daizo)
-  - Data: xml-p5/, tipitaka-xml/romn/
-  - Cache: cache/
-  - Binaries: bin/
+# Dry run
+scripts/release.sh 0.3.3 --all --dry-run
+```
 
 ## License
 

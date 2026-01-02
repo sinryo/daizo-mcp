@@ -2001,8 +2001,8 @@ fn cbeta_grep_internal(
                 let start = mat.start();
                 let end = mat.end();
 
-                // 行数を計算
-                let line_number = Some(content[..start].lines().count());
+                // 行数を計算（1-based: マッチ開始位置の行番号）
+                let line_number = Some(content[..start].matches('\n').count() + 1);
 
                 // 文字境界を考慮した安全なスライシング
                 let context_start = start.saturating_sub(100);
@@ -2157,8 +2157,8 @@ fn cbeta_grep_internal_exclude_t(
                 let start = mat.start();
                 let end = mat.end();
 
-                // 行数を計算
-                let line_number = Some(content[..start].lines().count());
+                // 行数を計算（1-based: マッチ開始位置の行番号）
+                let line_number = Some(content[..start].matches('\n').count() + 1);
 
                 // 文字境界を考慮した安全なスライシング
                 let context_start = start.saturating_sub(100);
@@ -2360,8 +2360,8 @@ pub fn tipitaka_grep(
                 let start = mat.start();
                 let end = mat.end();
 
-                // 行数を計算
-                let line_number = Some(content[..start].lines().count());
+                // 行数を計算（1-based: マッチ開始位置の行番号）
+                let line_number = Some(content[..start].matches('\n').count() + 1);
 
                 // 文字境界を考慮した安全なスライシング
                 let context_start = start.saturating_sub(150);
@@ -2486,7 +2486,8 @@ pub fn gretil_grep(
             for mat in matches.iter().take(max_matches_per_file) {
                 let start = mat.start();
                 let end = mat.end();
-                let line_number = Some(content[..start].lines().count());
+                // 行数を計算（1-based: マッチ開始位置の行番号）
+                let line_number = Some(content[..start].matches('\n').count() + 1);
                 let context_start = start.saturating_sub(120);
                 let context_end = std::cmp::min(end + 120, content.len());
                 let safe_start = content
