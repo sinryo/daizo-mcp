@@ -8,10 +8,15 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use unicode_normalization::UnicodeNormalization;
 use walkdir::WalkDir;
 
 use encoding_rs;
+use grep_matcher::Matcher;
+use grep_regex::RegexMatcherBuilder;
+use grep_searcher::sinks::UTF8;
+use grep_searcher::{BinaryDetection, SearcherBuilder};
 use serde::Deserialize;
 
 pub mod path_resolver;
@@ -1926,23 +1931,76 @@ pub fn cbeta_grep(
     all_results
 }
 
+/// Helper struct for collecting ripgrep search matches
+#[derive(Debug, Clone)]
+struct RgMatch {
+    line_number: u64,
+    line_content: String,
+}
+
+/// Generic ripgrep-based search function that returns matches per file
+fn ripgrep_search_file(
+    path: &Path,
+    matcher: &grep_regex::RegexMatcher,
+    max_matches: usize,
+) -> Option<Vec<RgMatch>> {
+    let matches = Mutex::new(Vec::new());
+    let match_count = std::sync::atomic::AtomicUsize::new(0);
+
+    let mut searcher = SearcherBuilder::new()
+        .binary_detection(BinaryDetection::quit(b'\x00'))
+        .line_number(true)
+        .build();
+
+    let result = searcher.search_path(
+        matcher,
+        path,
+        UTF8(|line_num, line| {
+            // Early exit if we have enough matches
+            if match_count.load(std::sync::atomic::Ordering::Relaxed) >= max_matches {
+                return Ok(false); // Stop searching
+            }
+
+            let mut guard = matches.lock().unwrap();
+            guard.push(RgMatch {
+                line_number: line_num,
+                line_content: line.trim_end().to_string(),
+            });
+            match_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(true)
+        }),
+    );
+
+    match result {
+        Ok(_) => {
+            let guard = matches.lock().unwrap();
+            if guard.is_empty() {
+                None
+            } else {
+                Some(guard.clone())
+            }
+        }
+        Err(_) => None,
+    }
+}
+
 fn cbeta_grep_internal(
     root: &Path,
     query: &str,
     max_results: usize,
     max_matches_per_file: usize,
 ) -> Vec<GrepResult> {
-    use regex::RegexBuilder;
-
-    let re = match RegexBuilder::new(query)
+    // Build ripgrep matcher (case-insensitive)
+    let matcher = match RegexMatcherBuilder::new()
         .case_insensitive(true)
         .multi_line(true)
-        .build()
+        .build(query)
     {
-        Ok(r) => r,
+        Ok(m) => m,
         Err(_) => return Vec::new(),
     };
 
+    // Collect XML file paths
     let mut paths: Vec<PathBuf> = Vec::new();
     for e in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
         if e.file_type().is_file() {
@@ -1954,17 +2012,14 @@ fn cbeta_grep_internal(
         }
     }
 
+    // Search files in parallel using ripgrep
     paths
         .par_iter()
         .filter_map(|p| {
+            let rg_matches = ripgrep_search_file(p, &matcher, max_matches_per_file)?;
+
+            // Read file for additional processing (juan info extraction)
             let content = std::fs::read_to_string(p).ok()?;
-            let matches: Vec<_> = re.find_iter(&content).collect();
-
-            if matches.is_empty() {
-                return None;
-            }
-
-            let mut grep_matches = Vec::new();
             let mut juan_info = Vec::new();
 
             // Juan情報の抽出（高速化のため制限付き）
@@ -1996,70 +2051,37 @@ fn cbeta_grep_internal(
                 events += 1;
             }
 
-            // マッチ箇所の文脈抽出
-            for mat in matches.iter().take(max_matches_per_file) {
-                let start = mat.start();
-                let end = mat.end();
+            // Convert ripgrep matches to GrepMatch
+            let grep_matches: Vec<GrepMatch> = rg_matches
+                .iter()
+                .map(|m| {
+                    // Find the actual matched text in the line
+                    let highlight = matcher
+                        .find(m.line_content.as_bytes())
+                        .ok()
+                        .flatten()
+                        .map(|mat| {
+                            m.line_content
+                                .get(mat.start()..mat.end())
+                                .unwrap_or("")
+                                .to_string()
+                        })
+                        .unwrap_or_default();
 
-                // 行数を計算（1-based: マッチ開始位置の行番号）
-                let line_number = Some(content[..start].matches('\n').count() + 1);
-
-                // 文字境界を考慮した安全なスライシング
-                let context_start = start.saturating_sub(100);
-                let context_end = std::cmp::min(end + 100, content.len());
-
-                // 文字境界を見つける
-                let safe_start = content
-                    .char_indices()
-                    .find(|(i, _)| *i >= context_start)
-                    .map(|(i, _)| i)
-                    .unwrap_or(context_start);
-                let safe_end = content
-                    .char_indices()
-                    .find(|(i, _)| *i >= context_end)
-                    .map(|(i, _)| i)
-                    .unwrap_or(content.len());
-
-                let context = if safe_start < safe_end {
-                    content[safe_start..safe_end]
-                        .split_whitespace()
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                } else {
-                    String::new()
-                };
-
-                // ハイライト部分も文字境界を考慮
-                let highlight_start = content
-                    .char_indices()
-                    .find(|(i, _)| *i >= start)
-                    .map(|(i, _)| i)
-                    .unwrap_or(start);
-                let highlight_end = content
-                    .char_indices()
-                    .find(|(i, _)| *i >= end)
-                    .map(|(i, _)| i)
-                    .unwrap_or(content.len());
-
-                let highlight = if highlight_start < highlight_end {
-                    content[highlight_start..highlight_end].to_string()
-                } else {
-                    String::new()
-                };
-
-                grep_matches.push(GrepMatch {
-                    context,
-                    highlight,
-                    juan_number: juan_info.first().cloned(),
-                    section: None,
-                    line_number,
-                });
-            }
+                    GrepMatch {
+                        context: m.line_content.clone(),
+                        highlight,
+                        juan_number: juan_info.first().cloned(),
+                        section: None,
+                        line_number: Some(m.line_number as usize),
+                    }
+                })
+                .collect();
 
             let file_id = stem_from(p);
-            let title = file_id.clone(); // 簡易タイトル
+            let title = file_id.clone();
+            let total_matches = grep_matches.len();
 
-            // Fetch用ヒント
             let fetch_hints = FetchHints {
                 recommended_parts: juan_info.clone(),
                 total_content_size: Some(format!("{}KB", content.len() / 1024)),
@@ -2071,7 +2093,7 @@ fn cbeta_grep_internal(
                 file_id,
                 title,
                 matches: grep_matches,
-                total_matches: matches.len(),
+                total_matches,
                 fetch_hints,
             })
         })
@@ -2087,17 +2109,17 @@ fn cbeta_grep_internal_exclude_t(
     max_results: usize,
     max_matches_per_file: usize,
 ) -> Vec<GrepResult> {
-    use regex::RegexBuilder;
-
-    let re = match RegexBuilder::new(query)
+    // Build ripgrep matcher (case-insensitive)
+    let matcher = match RegexMatcherBuilder::new()
         .case_insensitive(true)
         .multi_line(true)
-        .build()
+        .build(query)
     {
-        Ok(r) => r,
+        Ok(m) => m,
         Err(_) => return Vec::new(),
     };
 
+    // Collect XML file paths excluding /T/ folder
     let mut paths: Vec<PathBuf> = Vec::new();
     for e in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
         if e.file_type().is_file() {
@@ -2110,17 +2132,14 @@ fn cbeta_grep_internal_exclude_t(
         }
     }
 
+    // Search files in parallel using ripgrep
     paths
         .par_iter()
         .filter_map(|p| {
+            let rg_matches = ripgrep_search_file(p, &matcher, max_matches_per_file)?;
+
+            // Read file for additional processing (juan info extraction)
             let content = std::fs::read_to_string(p).ok()?;
-            let matches: Vec<_> = re.find_iter(&content).collect();
-
-            if matches.is_empty() {
-                return None;
-            }
-
-            let mut grep_matches = Vec::new();
             let mut juan_info = Vec::new();
 
             // Juan情報の抽出（高速化のため制限付き）
@@ -2152,70 +2171,36 @@ fn cbeta_grep_internal_exclude_t(
                 events += 1;
             }
 
-            // マッチ箇所の文脈抽出
-            for mat in matches.iter().take(max_matches_per_file) {
-                let start = mat.start();
-                let end = mat.end();
+            // Convert ripgrep matches to GrepMatch
+            let grep_matches: Vec<GrepMatch> = rg_matches
+                .iter()
+                .map(|m| {
+                    let highlight = matcher
+                        .find(m.line_content.as_bytes())
+                        .ok()
+                        .flatten()
+                        .map(|mat| {
+                            m.line_content
+                                .get(mat.start()..mat.end())
+                                .unwrap_or("")
+                                .to_string()
+                        })
+                        .unwrap_or_default();
 
-                // 行数を計算（1-based: マッチ開始位置の行番号）
-                let line_number = Some(content[..start].matches('\n').count() + 1);
-
-                // 文字境界を考慮した安全なスライシング
-                let context_start = start.saturating_sub(100);
-                let context_end = std::cmp::min(end + 100, content.len());
-
-                // 文字境界を見つける
-                let safe_start = content
-                    .char_indices()
-                    .find(|(i, _)| *i >= context_start)
-                    .map(|(i, _)| i)
-                    .unwrap_or(context_start);
-                let safe_end = content
-                    .char_indices()
-                    .find(|(i, _)| *i >= context_end)
-                    .map(|(i, _)| i)
-                    .unwrap_or(content.len());
-
-                let context = if safe_start < safe_end {
-                    content[safe_start..safe_end]
-                        .split_whitespace()
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                } else {
-                    String::new()
-                };
-
-                // ハイライト部分も文字境界を考慮
-                let highlight_start = content
-                    .char_indices()
-                    .find(|(i, _)| *i >= start)
-                    .map(|(i, _)| i)
-                    .unwrap_or(start);
-                let highlight_end = content
-                    .char_indices()
-                    .find(|(i, _)| *i >= end)
-                    .map(|(i, _)| i)
-                    .unwrap_or(content.len());
-
-                let highlight = if highlight_start < highlight_end {
-                    content[highlight_start..highlight_end].to_string()
-                } else {
-                    String::new()
-                };
-
-                grep_matches.push(GrepMatch {
-                    context,
-                    highlight,
-                    juan_number: juan_info.first().cloned(),
-                    section: None,
-                    line_number,
-                });
-            }
+                    GrepMatch {
+                        context: m.line_content.clone(),
+                        highlight,
+                        juan_number: juan_info.first().cloned(),
+                        section: None,
+                        line_number: Some(m.line_number as usize),
+                    }
+                })
+                .collect();
 
             let file_id = stem_from(p);
-            let title = file_id.clone(); // 簡易タイトル
+            let title = file_id.clone();
+            let total_matches = grep_matches.len();
 
-            // Fetch用ヒント
             let fetch_hints = FetchHints {
                 recommended_parts: juan_info.clone(),
                 total_content_size: Some(format!("{}KB", content.len() / 1024)),
@@ -2227,7 +2212,7 @@ fn cbeta_grep_internal_exclude_t(
                 file_id,
                 title,
                 matches: grep_matches,
-                total_matches: matches.len(),
+                total_matches,
                 fetch_hints,
             })
         })
@@ -2237,23 +2222,65 @@ fn cbeta_grep_internal_exclude_t(
         .collect()
 }
 
+/// Helper to read file with UTF-16 support (for Tipitaka)
+fn read_file_with_encoding(path: &Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        match encoding_rs::UTF_16LE.decode(&bytes) {
+            (decoded, _, false) => Some(decoded.into_owned()),
+            _ => None,
+        }
+    } else if bytes.starts_with(&[0xFE, 0xFF]) {
+        match encoding_rs::UTF_16BE.decode(&bytes) {
+            (decoded, _, false) => Some(decoded.into_owned()),
+            _ => None,
+        }
+    } else {
+        String::from_utf8(bytes).ok()
+    }
+}
+
+/// Ripgrep search on a string content (for UTF-16 files that need pre-processing)
+fn ripgrep_search_content(
+    content: &str,
+    matcher: &grep_regex::RegexMatcher,
+    max_matches: usize,
+) -> Vec<RgMatch> {
+    let mut results = Vec::new();
+    let mut line_number = 0u64;
+
+    for line in content.lines() {
+        line_number += 1;
+        if results.len() >= max_matches {
+            break;
+        }
+        if matcher.find(line.as_bytes()).ok().flatten().is_some() {
+            results.push(RgMatch {
+                line_number,
+                line_content: line.to_string(),
+            });
+        }
+    }
+    results
+}
+
 pub fn tipitaka_grep(
     root: &Path,
     query: &str,
     max_results: usize,
     max_matches_per_file: usize,
 ) -> Vec<GrepResult> {
-    use regex::RegexBuilder;
-
-    let re = match RegexBuilder::new(query)
+    // Build ripgrep matcher (case-insensitive)
+    let matcher = match RegexMatcherBuilder::new()
         .case_insensitive(true)
         .multi_line(true)
-        .build()
+        .build(query)
     {
-        Ok(r) => r,
+        Ok(m) => m,
         Err(_) => return Vec::new(),
     };
 
+    // Collect XML file paths
     let mut paths: Vec<PathBuf> = Vec::new();
     for e in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
         if e.file_type().is_file() {
@@ -2265,39 +2292,19 @@ pub fn tipitaka_grep(
         }
     }
 
+    // Search files in parallel using ripgrep
     paths
         .par_iter()
         .filter_map(|p| {
             // UTF-16対応の読み込み
-            let content = match std::fs::read(p) {
-                Ok(bytes) => {
-                    if bytes.starts_with(&[0xFF, 0xFE]) {
-                        match encoding_rs::UTF_16LE.decode(&bytes) {
-                            (decoded, _, false) => decoded.into_owned(),
-                            _ => return None,
-                        }
-                    } else if bytes.starts_with(&[0xFE, 0xFF]) {
-                        match encoding_rs::UTF_16BE.decode(&bytes) {
-                            (decoded, _, false) => decoded.into_owned(),
-                            _ => return None,
-                        }
-                    } else {
-                        match String::from_utf8(bytes) {
-                            Ok(s) => s,
-                            Err(_) => return None,
-                        }
-                    }
-                }
-                Err(_) => return None,
-            };
+            let content = read_file_with_encoding(p)?;
 
-            let matches: Vec<_> = re.find_iter(&content).collect();
-
-            if matches.is_empty() {
+            // Search using ripgrep matcher on content
+            let rg_matches = ripgrep_search_content(&content, &matcher, max_matches_per_file);
+            if rg_matches.is_empty() {
                 return None;
             }
 
-            let mut grep_matches = Vec::new();
             let mut structure_info = Vec::new();
 
             // 構造情報の高速抽出
@@ -2355,65 +2362,31 @@ pub fn tipitaka_grep(
                 events += 1;
             }
 
-            // マッチ箇所の文脈抽出
-            for mat in matches.iter().take(max_matches_per_file) {
-                let start = mat.start();
-                let end = mat.end();
+            // Convert ripgrep matches to GrepMatch
+            let grep_matches: Vec<GrepMatch> = rg_matches
+                .iter()
+                .map(|m| {
+                    let highlight = matcher
+                        .find(m.line_content.as_bytes())
+                        .ok()
+                        .flatten()
+                        .map(|mat| {
+                            m.line_content
+                                .get(mat.start()..mat.end())
+                                .unwrap_or("")
+                                .to_string()
+                        })
+                        .unwrap_or_default();
 
-                // 行数を計算（1-based: マッチ開始位置の行番号）
-                let line_number = Some(content[..start].matches('\n').count() + 1);
-
-                // 文字境界を考慮した安全なスライシング
-                let context_start = start.saturating_sub(150);
-                let context_end = std::cmp::min(end + 150, content.len());
-
-                // 文字境界を見つける
-                let safe_start = content
-                    .char_indices()
-                    .find(|(i, _)| *i >= context_start)
-                    .map(|(i, _)| i)
-                    .unwrap_or(context_start);
-                let safe_end = content
-                    .char_indices()
-                    .find(|(i, _)| *i >= context_end)
-                    .map(|(i, _)| i)
-                    .unwrap_or(content.len());
-
-                let context = if safe_start < safe_end {
-                    content[safe_start..safe_end]
-                        .split_whitespace()
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                } else {
-                    String::new()
-                };
-
-                // ハイライト部分も文字境界を考慮
-                let highlight_start = content
-                    .char_indices()
-                    .find(|(i, _)| *i >= start)
-                    .map(|(i, _)| i)
-                    .unwrap_or(start);
-                let highlight_end = content
-                    .char_indices()
-                    .find(|(i, _)| *i >= end)
-                    .map(|(i, _)| i)
-                    .unwrap_or(content.len());
-
-                let highlight = if highlight_start < highlight_end {
-                    content[highlight_start..highlight_end].to_string()
-                } else {
-                    String::new()
-                };
-
-                grep_matches.push(GrepMatch {
-                    context,
-                    highlight,
-                    juan_number: None,
-                    section: structure_info.first().cloned(),
-                    line_number,
-                });
-            }
+                    GrepMatch {
+                        context: m.line_content.clone(),
+                        highlight,
+                        juan_number: None,
+                        section: structure_info.first().cloned(),
+                        line_number: Some(m.line_number as usize),
+                    }
+                })
+                .collect();
 
             let file_id = stem_from(p);
             let title = [nikaya.as_deref(), book.as_deref()]
@@ -2426,6 +2399,7 @@ pub fn tipitaka_grep(
             } else {
                 title
             };
+            let total_matches = grep_matches.len();
 
             // Fetch用ヒント
             let fetch_hints = FetchHints {
@@ -2439,7 +2413,7 @@ pub fn tipitaka_grep(
                 file_id,
                 title,
                 matches: grep_matches,
-                total_matches: matches.len(),
+                total_matches,
                 fetch_hints,
             })
         })
@@ -2455,15 +2429,17 @@ pub fn gretil_grep(
     max_results: usize,
     max_matches_per_file: usize,
 ) -> Vec<GrepResult> {
-    use regex::RegexBuilder;
-    let re = match RegexBuilder::new(query)
+    // Build ripgrep matcher (case-insensitive)
+    let matcher = match RegexMatcherBuilder::new()
         .case_insensitive(true)
         .multi_line(true)
-        .build()
+        .build(query)
     {
-        Ok(r) => r,
+        Ok(m) => m,
         Err(_) => return Vec::new(),
     };
+
+    // Collect XML file paths
     let mut paths: Vec<PathBuf> = Vec::new();
     for e in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
         if e.file_type().is_file() {
@@ -2474,76 +2450,58 @@ pub fn gretil_grep(
             }
         }
     }
+
+    // Search files in parallel using ripgrep
     paths
         .par_iter()
         .filter_map(|p| {
+            let rg_matches = ripgrep_search_file(p, &matcher, max_matches_per_file)?;
+
+            // Read file for size calculation
             let content = std::fs::read_to_string(p).ok()?;
-            let matches: Vec<_> = re.find_iter(&content).collect();
-            if matches.is_empty() {
-                return None;
-            }
-            let mut grep_matches = Vec::new();
-            for mat in matches.iter().take(max_matches_per_file) {
-                let start = mat.start();
-                let end = mat.end();
-                // 行数を計算（1-based: マッチ開始位置の行番号）
-                let line_number = Some(content[..start].matches('\n').count() + 1);
-                let context_start = start.saturating_sub(120);
-                let context_end = std::cmp::min(end + 120, content.len());
-                let safe_start = content
-                    .char_indices()
-                    .find(|(i, _)| *i >= context_start)
-                    .map(|(i, _)| i)
-                    .unwrap_or(context_start);
-                let safe_end = content
-                    .char_indices()
-                    .find(|(i, _)| *i >= context_end)
-                    .map(|(i, _)| i)
-                    .unwrap_or(content.len());
-                let context = if safe_start < safe_end {
-                    content[safe_start..safe_end]
-                        .split_whitespace()
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                } else {
-                    String::new()
-                };
-                let highlight_start = content
-                    .char_indices()
-                    .find(|(i, _)| *i >= start)
-                    .map(|(i, _)| i)
-                    .unwrap_or(start);
-                let highlight_end = content
-                    .char_indices()
-                    .find(|(i, _)| *i >= end)
-                    .map(|(i, _)| i)
-                    .unwrap_or(content.len());
-                let highlight = if highlight_start < highlight_end {
-                    content[highlight_start..highlight_end].to_string()
-                } else {
-                    String::new()
-                };
-                grep_matches.push(GrepMatch {
-                    context,
-                    highlight,
-                    juan_number: None,
-                    section: None,
-                    line_number,
-                });
-            }
+
+            // Convert ripgrep matches to GrepMatch
+            let grep_matches: Vec<GrepMatch> = rg_matches
+                .iter()
+                .map(|m| {
+                    let highlight = matcher
+                        .find(m.line_content.as_bytes())
+                        .ok()
+                        .flatten()
+                        .map(|mat| {
+                            m.line_content
+                                .get(mat.start()..mat.end())
+                                .unwrap_or("")
+                                .to_string()
+                        })
+                        .unwrap_or_default();
+
+                    GrepMatch {
+                        context: m.line_content.clone(),
+                        highlight,
+                        juan_number: None,
+                        section: None,
+                        line_number: Some(m.line_number as usize),
+                    }
+                })
+                .collect();
+
             let file_id = stem_from(p);
             let title = file_id.clone();
+            let total_matches = grep_matches.len();
+
             let fetch_hints = FetchHints {
                 recommended_parts: vec!["full".to_string()],
                 total_content_size: Some(format!("{}KB", content.len() / 1024)),
                 structure_info: Vec::new(),
             };
+
             Some(GrepResult {
                 file_path: p.to_string_lossy().to_string(),
                 file_id,
                 title,
                 matches: grep_matches,
-                total_matches: matches.len(),
+                total_matches,
                 fetch_hints,
             })
         })
