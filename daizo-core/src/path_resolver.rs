@@ -1,8 +1,9 @@
 use crate::IndexEntry;
 use glob::glob;
+use ignore::WalkBuilder;
 use regex::Regex;
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
+use std::sync::Mutex;
 
 pub fn daizo_home() -> PathBuf {
     if let Ok(p) = std::env::var("DAIZO_DIR") {
@@ -28,31 +29,73 @@ pub fn cache_dir() -> PathBuf {
 }
 
 pub fn find_in_dir(root: &Path, stem_hint: &str) -> Option<PathBuf> {
-    for e in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
-        if e.file_type().is_file() {
-            if let Some(stem) = e.path().file_stem().and_then(|s| s.to_str()) {
-                if stem.to_lowercase().contains(&stem_hint.to_lowercase())
-                    && e.path().extension().and_then(|s| s.to_str()) == Some("xml")
-                {
-                    return Some(e.path().to_path_buf());
+    let hint = stem_hint.to_lowercase();
+    let result: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+    WalkBuilder::new(root)
+        .hidden(false)
+        .git_ignore(false)
+        .git_global(false)
+        .git_exclude(false)
+        .build_parallel()
+        .run(|| {
+            let hint = hint.clone();
+            let result = &result;
+            Box::new(move |entry| {
+                if result.lock().unwrap().is_some() {
+                    return ignore::WalkState::Quit;
                 }
-            }
-        }
-    }
-    None
+                if let Ok(e) = entry {
+                    if e.file_type().is_some_and(|ft| ft.is_file()) {
+                        if let Some(stem) = e.path().file_stem().and_then(|s| s.to_str()) {
+                            if stem.to_lowercase().contains(&hint)
+                                && e.path().extension().and_then(|s| s.to_str()) == Some("xml")
+                            {
+                                *result.lock().unwrap() = Some(e.path().to_path_buf());
+                                return ignore::WalkState::Quit;
+                            }
+                        }
+                    }
+                }
+                ignore::WalkState::Continue
+            })
+        });
+
+    result.into_inner().unwrap()
 }
 
 pub fn find_exact_file_by_name(root: &Path, filename: &str) -> Option<PathBuf> {
-    for e in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
-        if e.file_type().is_file() {
-            if let Some(name) = e.path().file_name().and_then(|s| s.to_str()) {
-                if name.eq_ignore_ascii_case(filename) {
-                    return Some(e.path().to_path_buf());
+    let target = filename.to_lowercase();
+    let result: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+    WalkBuilder::new(root)
+        .hidden(false)
+        .git_ignore(false)
+        .git_global(false)
+        .git_exclude(false)
+        .build_parallel()
+        .run(|| {
+            let target = target.clone();
+            let result = &result;
+            Box::new(move |entry| {
+                if result.lock().unwrap().is_some() {
+                    return ignore::WalkState::Quit;
                 }
-            }
-        }
-    }
-    None
+                if let Ok(e) = entry {
+                    if e.file_type().is_some_and(|ft| ft.is_file()) {
+                        if let Some(name) = e.path().file_name().and_then(|s| s.to_str()) {
+                            if name.to_lowercase() == target {
+                                *result.lock().unwrap() = Some(e.path().to_path_buf());
+                                return ignore::WalkState::Quit;
+                            }
+                        }
+                    }
+                }
+                ignore::WalkState::Continue
+            })
+        });
+
+    result.into_inner().unwrap()
 }
 
 /// Fast direct path resolution for CBETA using glob patterns.
@@ -108,34 +151,73 @@ pub fn resolve_cbeta_path_by_id(id: &str) -> Option<PathBuf> {
         return Some(path);
     }
 
-    // Fallback: slower WalkDir scan for non-standard IDs
+    // Fallback: slower scan for non-standard IDs using ignore crate
     let m = Regex::new(r"^([A-Za-z]+)(\d+)$").ok()?;
     let root = cbeta_root();
     if let Some(c) = m.captures(id) {
-        let canon = &c[1];
-        let num = &c[2];
-        for e in WalkDir::new(root.join(canon))
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
-            if e.file_type().is_file() {
-                let name = e.file_name().to_string_lossy().to_lowercase();
-                if name.contains(&format!("n{}", num)) && name.ends_with(".xml") {
-                    return Some(e.path().to_path_buf());
-                }
-            }
+        let canon = c[1].to_string();
+        let num = c[2].to_string();
+        let search_pattern = format!("n{}", num);
+        let result: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+        WalkBuilder::new(root.join(&canon))
+            .hidden(false)
+            .git_ignore(false)
+            .build_parallel()
+            .run(|| {
+                let search_pattern = search_pattern.clone();
+                let result = &result;
+                Box::new(move |entry| {
+                    if result.lock().unwrap().is_some() {
+                        return ignore::WalkState::Quit;
+                    }
+                    if let Ok(e) = entry {
+                        if e.file_type().is_some_and(|ft| ft.is_file()) {
+                            let name = e.file_name().to_string_lossy().to_lowercase();
+                            if name.contains(&search_pattern) && name.ends_with(".xml") {
+                                *result.lock().unwrap() = Some(e.path().to_path_buf());
+                                return ignore::WalkState::Quit;
+                            }
+                        }
+                    }
+                    ignore::WalkState::Continue
+                })
+            });
+
+        if let Some(path) = result.into_inner().unwrap() {
+            return Some(path);
         }
     }
+
     // fallback: anywhere *id*.xml
-    for e in WalkDir::new(&root).into_iter().filter_map(|e| e.ok()) {
-        if e.file_type().is_file() {
-            let name = e.file_name().to_string_lossy().to_lowercase();
-            if name.contains(&id.to_lowercase()) && name.ends_with(".xml") {
-                return Some(e.path().to_path_buf());
-            }
-        }
-    }
-    None
+    let id_lower = id.to_lowercase();
+    let result: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+    WalkBuilder::new(&root)
+        .hidden(false)
+        .git_ignore(false)
+        .build_parallel()
+        .run(|| {
+            let id_lower = id_lower.clone();
+            let result = &result;
+            Box::new(move |entry| {
+                if result.lock().unwrap().is_some() {
+                    return ignore::WalkState::Quit;
+                }
+                if let Ok(e) = entry {
+                    if e.file_type().is_some_and(|ft| ft.is_file()) {
+                        let name = e.file_name().to_string_lossy().to_lowercase();
+                        if name.contains(&id_lower) && name.ends_with(".xml") {
+                            *result.lock().unwrap() = Some(e.path().to_path_buf());
+                            return ignore::WalkState::Quit;
+                        }
+                    }
+                }
+                ignore::WalkState::Continue
+            })
+        });
+
+    result.into_inner().unwrap()
 }
 
 /// Fast direct path resolution for Tipitaka using Nikāya codes or file stems.
@@ -280,42 +362,60 @@ pub fn resolve_tipitaka_path_direct(id: &str) -> Option<PathBuf> {
 /// For Tipitaka, find the smallest numeric-sequence file that shares the same base.
 pub fn find_tipitaka_content_for_base(base: &str) -> Option<PathBuf> {
     let root = tipitaka_root();
-    let mut best: Option<(u32, PathBuf)> = None;
-    for e in WalkDir::new(&root).into_iter().filter_map(|e| e.ok()) {
-        if e.file_type().is_file() {
-            let p = e.path();
-            if p.extension().and_then(|s| s.to_str()) != Some("xml") {
-                continue;
-            }
-            let name = p
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_lowercase();
-            if !name.contains(&base.to_lowercase()) {
-                continue;
-            }
-            if name.contains("toc") || name.contains("sitemap") || name.contains("tree") {
-                continue;
-            }
-            let num = name
-                .trim_end_matches(".xml")
-                .chars()
-                .rev()
-                .take_while(|c| c.is_ascii_digit())
-                .collect::<String>();
-            let n = num.chars().rev().collect::<String>();
-            let rank = if n.is_empty() {
-                u32::MAX
-            } else {
-                n.parse::<u32>().unwrap_or(u32::MAX)
-            };
-            if best.as_ref().map(|(bn, _)| rank < *bn).unwrap_or(true) {
-                best = Some((rank, p.to_path_buf()));
-            }
-        }
-    }
-    best.map(|(_, p)| p)
+    let base_lower = base.to_lowercase();
+    let best: Mutex<Option<(u32, PathBuf)>> = Mutex::new(None);
+
+    WalkBuilder::new(&root)
+        .hidden(false)
+        .git_ignore(false)
+        .git_global(false)
+        .git_exclude(false)
+        .build_parallel()
+        .run(|| {
+            let base_lower = base_lower.clone();
+            let best = &best;
+            Box::new(move |entry| {
+                if let Ok(e) = entry {
+                    if e.file_type().is_some_and(|ft| ft.is_file()) {
+                        let p = e.path();
+                        if p.extension().and_then(|s| s.to_str()) != Some("xml") {
+                            return ignore::WalkState::Continue;
+                        }
+                        let name = p
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("")
+                            .to_lowercase();
+                        if !name.contains(&base_lower) {
+                            return ignore::WalkState::Continue;
+                        }
+                        if name.contains("toc") || name.contains("sitemap") || name.contains("tree")
+                        {
+                            return ignore::WalkState::Continue;
+                        }
+                        let num = name
+                            .trim_end_matches(".xml")
+                            .chars()
+                            .rev()
+                            .take_while(|c| c.is_ascii_digit())
+                            .collect::<String>();
+                        let n = num.chars().rev().collect::<String>();
+                        let rank = if n.is_empty() {
+                            u32::MAX
+                        } else {
+                            n.parse::<u32>().unwrap_or(u32::MAX)
+                        };
+                        let mut guard = best.lock().unwrap();
+                        if guard.as_ref().map(|(bn, _)| rank < *bn).unwrap_or(true) {
+                            *guard = Some((rank, p.to_path_buf()));
+                        }
+                    }
+                }
+                ignore::WalkState::Continue
+            })
+        });
+
+    best.into_inner().unwrap().map(|(_, p)| p)
 }
 
 /// Resolve a Tipitaka XML path by id (stem) using fast direct resolution first, then index fallbacks.

@@ -10,13 +10,13 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use unicode_normalization::UnicodeNormalization;
-use walkdir::WalkDir;
 
 use encoding_rs;
 use grep_matcher::Matcher;
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::sinks::UTF8;
 use grep_searcher::{BinaryDetection, SearcherBuilder};
+use ignore::WalkBuilder;
 use serde::Deserialize;
 
 pub mod path_resolver;
@@ -57,22 +57,45 @@ fn attr_val<'a>(e: &'a BytesStart<'a>, key: &[u8]) -> Option<Cow<'a, str>> {
     None
 }
 
-pub fn build_index(root: &Path, glob_hint: Option<&str>) -> Vec<IndexEntry> {
-    let mut paths: Vec<PathBuf> = Vec::new();
-    for e in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
-        if e.file_type().is_file() {
-            if let Some(name) = e.path().file_name().and_then(|s| s.to_str()) {
-                if name.ends_with(".xml") {
-                    if let Some(h) = glob_hint {
-                        if !e.path().to_string_lossy().contains(h) {
-                            continue;
+/// Collect XML file paths using ignore crate (fd-style fast walker)
+fn collect_xml_paths(root: &Path, filter: impl Fn(&Path, &str) -> bool + Sync) -> Vec<PathBuf> {
+    let paths = Mutex::new(Vec::new());
+    WalkBuilder::new(root)
+        .hidden(false) // Include hidden files (XML repos may have them)
+        .git_ignore(false) // Don't use .gitignore for data files
+        .git_global(false)
+        .git_exclude(false)
+        .build_parallel()
+        .run(|| {
+            Box::new(|entry| {
+                if let Ok(e) = entry {
+                    if e.file_type().is_some_and(|ft| ft.is_file()) {
+                        if let Some(name) = e.path().file_name().and_then(|s| s.to_str()) {
+                            if filter(e.path(), name) {
+                                paths.lock().unwrap().push(e.into_path());
+                            }
                         }
                     }
-                    paths.push(e.into_path());
                 }
+                ignore::WalkState::Continue
+            })
+        });
+    paths.into_inner().unwrap()
+}
+
+pub fn build_index(root: &Path, glob_hint: Option<&str>) -> Vec<IndexEntry> {
+    let hint = glob_hint.map(|s| s.to_string());
+    let paths = collect_xml_paths(root, |path, name| {
+        if !name.ends_with(".xml") {
+            return false;
+        }
+        if let Some(ref h) = hint {
+            if !path.to_string_lossy().contains(h) {
+                return false;
             }
         }
-    }
+        true
+    });
 
     paths
         .par_iter()
@@ -203,16 +226,7 @@ pub fn build_index(root: &Path, glob_hint: Option<&str>) -> Vec<IndexEntry> {
 
 // GRETIL 用: TEI ヘッダ（titleStmt/author/editor/respStmt/publisher/date）と本文<head>からメタ情報を抽出
 pub fn build_gretil_index(root: &Path) -> Vec<IndexEntry> {
-    let mut paths: Vec<PathBuf> = Vec::new();
-    for e in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
-        if e.file_type().is_file() {
-            if let Some(name) = e.path().file_name().and_then(|s| s.to_str()) {
-                if name.ends_with(".xml") {
-                    paths.push(e.into_path());
-                }
-            }
-        }
-    }
+    let paths = collect_xml_paths(root, |_, name| name.ends_with(".xml"));
 
     paths
         .par_iter()
@@ -572,16 +586,7 @@ pub fn build_gretil_index(root: &Path) -> Vec<IndexEntry> {
 
 // CBETA 用: TEI ヘッダや本文の構造からメタ情報を抽出してインデックスを高精度化
 pub fn build_cbeta_index(root: &Path) -> Vec<IndexEntry> {
-    let mut paths: Vec<PathBuf> = Vec::new();
-    for e in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
-        if e.file_type().is_file() {
-            if let Some(name) = e.path().file_name().and_then(|s| s.to_str()) {
-                if name.ends_with(".xml") {
-                    paths.push(e.into_path());
-                }
-            }
-        }
-    }
+    let paths = collect_xml_paths(root, |_, name| name.ends_with(".xml"));
 
     paths
         .par_iter()
@@ -882,22 +887,14 @@ pub fn build_cbeta_index(root: &Path) -> Vec<IndexEntry> {
 // Tipitaka 用: teiHeader が空な場合が多いため、<p rend="..."> 系から書誌情報を抽出してタイトルを構築
 pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
     // 走査: root 配下の .xml で .toc.xml は除外 (rootは既にromnディレクトリを指している)
-    let mut paths: Vec<PathBuf> = Vec::new();
-    for e in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
-        if e.file_type().is_file() {
-            if let Some(name) = e.path().file_name().and_then(|s| s.to_str()) {
-                if name.ends_with(".xml")
-                    && !name.contains("toc")
-                    && !name.contains("sitemap")
-                    && !name.contains("tree")
-                    && !name.ends_with(".xsl")
-                    && !name.ends_with(".css")
-                {
-                    paths.push(e.into_path());
-                }
-            }
-        }
-    }
+    let paths = collect_xml_paths(root, |_, name| {
+        name.ends_with(".xml")
+            && !name.contains("toc")
+            && !name.contains("sitemap")
+            && !name.contains("tree")
+            && !name.ends_with(".xsl")
+            && !name.ends_with(".css")
+    });
 
     paths
         .par_iter()
@@ -2000,17 +1997,8 @@ fn cbeta_grep_internal(
         Err(_) => return Vec::new(),
     };
 
-    // Collect XML file paths
-    let mut paths: Vec<PathBuf> = Vec::new();
-    for e in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
-        if e.file_type().is_file() {
-            if let Some(name) = e.path().file_name().and_then(|s| s.to_str()) {
-                if name.ends_with(".xml") {
-                    paths.push(e.into_path());
-                }
-            }
-        }
-    }
+    // Collect XML file paths using ignore crate
+    let paths = collect_xml_paths(root, |_, name| name.ends_with(".xml"));
 
     // Search files in parallel using ripgrep
     paths
@@ -2119,18 +2107,10 @@ fn cbeta_grep_internal_exclude_t(
         Err(_) => return Vec::new(),
     };
 
-    // Collect XML file paths excluding /T/ folder
-    let mut paths: Vec<PathBuf> = Vec::new();
-    for e in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
-        if e.file_type().is_file() {
-            if let Some(name) = e.path().file_name().and_then(|s| s.to_str()) {
-                // Tフォルダを除外し、XMLファイルのみ対象
-                if name.ends_with(".xml") && !e.path().to_string_lossy().contains("/T/") {
-                    paths.push(e.into_path());
-                }
-            }
-        }
-    }
+    // Collect XML file paths excluding /T/ folder using ignore crate
+    let paths = collect_xml_paths(root, |path, name| {
+        name.ends_with(".xml") && !path.to_string_lossy().contains("/T/")
+    });
 
     // Search files in parallel using ripgrep
     paths
@@ -2280,17 +2260,10 @@ pub fn tipitaka_grep(
         Err(_) => return Vec::new(),
     };
 
-    // Collect XML file paths
-    let mut paths: Vec<PathBuf> = Vec::new();
-    for e in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
-        if e.file_type().is_file() {
-            if let Some(name) = e.path().file_name().and_then(|s| s.to_str()) {
-                if name.ends_with(".xml") && !name.contains("toc") && !name.contains("sitemap") {
-                    paths.push(e.into_path());
-                }
-            }
-        }
-    }
+    // Collect XML file paths using ignore crate
+    let paths = collect_xml_paths(root, |_, name| {
+        name.ends_with(".xml") && !name.contains("toc") && !name.contains("sitemap")
+    });
 
     // Search files in parallel using ripgrep
     paths
@@ -2439,17 +2412,8 @@ pub fn gretil_grep(
         Err(_) => return Vec::new(),
     };
 
-    // Collect XML file paths
-    let mut paths: Vec<PathBuf> = Vec::new();
-    for e in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
-        if e.file_type().is_file() {
-            if let Some(name) = e.path().file_name().and_then(|s| s.to_str()) {
-                if name.ends_with(".xml") {
-                    paths.push(e.into_path());
-                }
-            }
-        }
-    }
+    // Collect XML file paths using ignore crate
+    let paths = collect_xml_paths(root, |_, name| name.ends_with(".xml"));
 
     // Search files in parallel using ripgrep
     paths
