@@ -5,3 +5,14 @@ members = [
   "daizo-mcp",
 ]
 resolver = "2"
+
+# Performance optimizations
+[profile.release]
+lto = "thin"           # Link-Time Optimization (faster compile, good speedup)
+codegen-units = 1      # Better optimization (slower compile)
+opt-level = 3          # Maximum optimization
+panic = "abort"        # Smaller binary, faster
+
+[profile.release-fast]
+inherits = "release"
+lto = "fat"            # Maximum LTO (slower compile, best runtime)

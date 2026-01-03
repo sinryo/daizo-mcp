@@ -1944,9 +1944,11 @@ fn ripgrep_search_file(
     let matches = Mutex::new(Vec::new());
     let match_count = std::sync::atomic::AtomicUsize::new(0);
 
+    // Use memory-mapped I/O for faster file access
     let mut searcher = SearcherBuilder::new()
         .binary_detection(BinaryDetection::quit(b'\x00'))
         .line_number(true)
+        .memory_map(unsafe { grep_searcher::MmapChoice::auto() })
         .build();
 
     let result = searcher.search_path(
@@ -2006,38 +2008,8 @@ fn cbeta_grep_internal(
         .filter_map(|p| {
             let rg_matches = ripgrep_search_file(p, &matcher, max_matches_per_file)?;
 
-            // Read file for additional processing (juan info extraction)
-            let content = std::fs::read_to_string(p).ok()?;
-            let mut juan_info = Vec::new();
-
-            // Juan情報の抽出（高速化のため制限付き）
-            let mut reader = Reader::from_str(&content);
-            reader.config_mut().trim_text_start = true;
-            reader.config_mut().trim_text_end = true;
-            let mut buf = Vec::new();
-            let mut events = 0;
-
-            loop {
-                if events > 5000 {
-                    break;
-                }
-                match reader.read_event_into(&mut buf) {
-                    Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                        let name_owned = e.name().as_ref().to_owned();
-                        let name = local_name(&name_owned);
-                        if name == b"juan" {
-                            if let Some(n) = attr_val(&e, b"n") {
-                                juan_info.push(n.to_string());
-                            }
-                        }
-                    }
-                    Ok(Event::Eof) => break,
-                    Err(_) => break,
-                    _ => {}
-                }
-                buf.clear();
-                events += 1;
-            }
+            // Get file size without reading entire content (faster)
+            let file_size = std::fs::metadata(p).ok().map(|m| m.len()).unwrap_or(0);
 
             // Convert ripgrep matches to GrepMatch
             let grep_matches: Vec<GrepMatch> = rg_matches
@@ -2059,7 +2031,7 @@ fn cbeta_grep_internal(
                     GrepMatch {
                         context: m.line_content.clone(),
                         highlight,
-                        juan_number: juan_info.first().cloned(),
+                        juan_number: None, // Skip expensive XML parsing for search
                         section: None,
                         line_number: Some(m.line_number as usize),
                     }
@@ -2071,9 +2043,9 @@ fn cbeta_grep_internal(
             let total_matches = grep_matches.len();
 
             let fetch_hints = FetchHints {
-                recommended_parts: juan_info.clone(),
-                total_content_size: Some(format!("{}KB", content.len() / 1024)),
-                structure_info: vec![format!("{}個のjuan", juan_info.len())],
+                recommended_parts: vec![], // Populated on fetch, not search
+                total_content_size: Some(format!("{}KB", file_size / 1024)),
+                structure_info: vec![],
             };
 
             Some(GrepResult {
@@ -2118,38 +2090,8 @@ fn cbeta_grep_internal_exclude_t(
         .filter_map(|p| {
             let rg_matches = ripgrep_search_file(p, &matcher, max_matches_per_file)?;
 
-            // Read file for additional processing (juan info extraction)
-            let content = std::fs::read_to_string(p).ok()?;
-            let mut juan_info = Vec::new();
-
-            // Juan情報の抽出（高速化のため制限付き）
-            let mut reader = Reader::from_str(&content);
-            reader.config_mut().trim_text_start = true;
-            reader.config_mut().trim_text_end = true;
-            let mut buf = Vec::new();
-            let mut events = 0;
-
-            loop {
-                if events > 5000 {
-                    break;
-                }
-                match reader.read_event_into(&mut buf) {
-                    Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                        let name_owned = e.name().as_ref().to_owned();
-                        let name = local_name(&name_owned);
-                        if name == b"juan" {
-                            if let Some(n) = attr_val(&e, b"n") {
-                                juan_info.push(n.to_string());
-                            }
-                        }
-                    }
-                    Ok(Event::Eof) => break,
-                    Err(_) => break,
-                    _ => {}
-                }
-                buf.clear();
-                events += 1;
-            }
+            // Get file size without reading entire content (faster)
+            let file_size = std::fs::metadata(p).ok().map(|m| m.len()).unwrap_or(0);
 
             // Convert ripgrep matches to GrepMatch
             let grep_matches: Vec<GrepMatch> = rg_matches
@@ -2170,7 +2112,7 @@ fn cbeta_grep_internal_exclude_t(
                     GrepMatch {
                         context: m.line_content.clone(),
                         highlight,
-                        juan_number: juan_info.first().cloned(),
+                        juan_number: None, // Skip expensive XML parsing for search
                         section: None,
                         line_number: Some(m.line_number as usize),
                     }
@@ -2182,9 +2124,9 @@ fn cbeta_grep_internal_exclude_t(
             let total_matches = grep_matches.len();
 
             let fetch_hints = FetchHints {
-                recommended_parts: juan_info.clone(),
-                total_content_size: Some(format!("{}KB", content.len() / 1024)),
-                structure_info: vec![format!("{}個のjuan", juan_info.len())],
+                recommended_parts: vec![], // Populated on fetch, not search
+                total_content_size: Some(format!("{}KB", file_size / 1024)),
+                structure_info: vec![],
             };
 
             Some(GrepResult {
@@ -2421,8 +2363,8 @@ pub fn gretil_grep(
         .filter_map(|p| {
             let rg_matches = ripgrep_search_file(p, &matcher, max_matches_per_file)?;
 
-            // Read file for size calculation
-            let content = std::fs::read_to_string(p).ok()?;
+            // Get file size without reading entire content (faster)
+            let file_size = std::fs::metadata(p).ok().map(|m| m.len()).unwrap_or(0);
 
             // Convert ripgrep matches to GrepMatch
             let grep_matches: Vec<GrepMatch> = rg_matches
@@ -2456,7 +2398,7 @@ pub fn gretil_grep(
 
             let fetch_hints = FetchHints {
                 recommended_parts: vec!["full".to_string()],
-                total_content_size: Some(format!("{}KB", content.len() / 1024)),
+                total_content_size: Some(format!("{}KB", file_size / 1024)),
                 structure_info: Vec::new(),
             };
 
