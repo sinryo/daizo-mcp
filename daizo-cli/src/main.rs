@@ -437,7 +437,7 @@ enum Commands {
         #[arg(long, default_value_t = 0)]
         offs: usize,
         /// Fields (wrap7 `fl`), must include `fascnm,startid`
-        #[arg(long, default_value = "id,fascnm,startid,endid")]
+        #[arg(long, default_value = "id,fascnm,startid,endid,body")]
         fields: String,
         /// Filter queries (wrap7 `fq`), repeatable
         #[arg(long)]

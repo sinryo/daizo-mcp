@@ -114,6 +114,21 @@ pub(crate) fn sat_wrap7_search_json(
     None
 }
 
+fn sat_wrap7_ensure_fields(fields: &str, required: &[&str]) -> String {
+    let mut out: Vec<String> = fields
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    for r in required {
+        if !out.iter().any(|x| x == r) {
+            out.push((*r).to_string());
+        }
+    }
+    out.join(",")
+}
+
 pub(crate) fn sat_detail_build_url(useid: &str) -> String {
     format!(
         "https://21dzk.l.u-tokyo.ac.jp/SAT2018/satdb2018pre.php?mode=detail&ob=1&mode2=2&useid={}",
@@ -131,6 +146,53 @@ pub(crate) fn title_score(title: &str, query: &str) -> f32 {
         sc = sc.max(0.85);
     }
     sc
+}
+
+fn sat_candidate_order(docs: &[serde_json::Value], query: &str) -> Vec<(usize, &'static str, f32)> {
+    let nq = normalized(query);
+    let mut any: Vec<(usize, f32)> = Vec::new();
+    let mut body: Vec<(usize, f32)> = Vec::new();
+    let mut title_contains: Vec<(usize, f32)> = Vec::new();
+    for (i, d) in docs.iter().enumerate() {
+        let title = d.get("fascnm").and_then(|v| v.as_str()).unwrap_or("");
+        let sc = title_score(title, query);
+        any.push((i, sc));
+        if nq.is_empty() {
+            continue;
+        }
+        if normalized(title).contains(&nq) {
+            title_contains.push((i, sc));
+        }
+        let b = d.get("body").and_then(|v| v.as_str()).unwrap_or("");
+        if !b.is_empty() && normalized(b).contains(&nq) {
+            body.push((i, sc));
+        }
+    }
+    let sort_sc = |a: &(usize, f32), b: &(usize, f32)| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    };
+    any.sort_by(sort_sc);
+
+    let mut out: Vec<(usize, &'static str, f32)> = Vec::new();
+    let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    for (i, sc) in body {
+        if seen.insert(i) {
+            out.push((i, "bodyContains", sc));
+        }
+    }
+    for (i, sc) in title_contains {
+        if seen.insert(i) {
+            out.push((i, "titleContains", sc));
+        }
+    }
+    for (i, sc) in any {
+        if seen.insert(i) {
+            out.push((i, "titleScore", sc));
+        }
+    }
+    out
 }
 
 pub fn sat_search(
@@ -390,7 +452,9 @@ pub fn sat_pipeline(
     max_chars: Option<usize>,
     json: bool,
 ) -> anyhow::Result<()> {
-    let wrap = sat_wrap7_search_json(query, rows, offs, fields, fq);
+    let fields_used =
+        sat_wrap7_ensure_fields(fields, &["id", "fascnm", "startid", "endid", "body"]);
+    let wrap = sat_wrap7_search_json(query, rows, offs, &fields_used, fq);
     if let Some(jsonv) = wrap.clone() {
         let docs = jsonv
             .get("response")
@@ -399,20 +463,42 @@ pub fn sat_pipeline(
             .cloned()
             .unwrap_or_default();
         if !docs.is_empty() {
-            let mut best_idx = 0usize;
-            let mut best_sc = -1.0f32;
-            for (i, d) in docs.iter().enumerate() {
-                let title = d.get("fascnm").and_then(|v| v.as_str()).unwrap_or("");
-                let sc = title_score(title, query);
-                if sc > best_sc {
-                    best_sc = sc;
-                    best_idx = i;
+            let nq = normalized(query);
+            let candidates = sat_candidate_order(&docs, query);
+            let mut chosen_i = candidates.first().map(|(i, _, _)| *i).unwrap_or(0);
+            let mut chosen_by = candidates
+                .first()
+                .map(|(_, by, _)| *by)
+                .unwrap_or("titleScore");
+            let mut chosen_sc = candidates.first().map(|(_, _, sc)| *sc).unwrap_or(-1.0);
+            let mut t = String::new();
+            let mut url = String::new();
+
+            // Validate against fetched detail when possible; avoid obvious false positives.
+            for (i, by, sc) in candidates.into_iter().take(5) {
+                let cand = &docs[i];
+                let useid = cand.get("startid").and_then(|v| v.as_str()).unwrap_or("");
+                if useid.is_empty() {
+                    continue;
+                }
+                let cand_url = sat_detail_build_url(useid);
+                let cand_t = sat_fetch_cli(&cand_url);
+                if nq.is_empty() || normalized(&cand_t).contains(&nq) {
+                    chosen_i = i;
+                    chosen_by = by;
+                    chosen_sc = sc;
+                    url = cand_url;
+                    t = cand_t;
+                    break;
+                }
+                // Keep first candidate as fallback
+                if t.is_empty() {
+                    url = cand_url;
+                    t = cand_t;
                 }
             }
-            let chosen = &docs[best_idx];
-            let useid = chosen.get("startid").and_then(|v| v.as_str()).unwrap_or("");
-            let url = sat_detail_build_url(useid);
-            let t = sat_fetch_cli(&url);
+
+            let chosen = &docs[chosen_i];
             let start = start_char.unwrap_or(0);
             let args = SliceArgs {
                 page: None,
@@ -435,9 +521,10 @@ pub fn sat_pipeline(
                     "truncated": (sliced.len() as u64) < (t.len() as u64),
                     "sourceUrl": url,
                     "extractionMethod": "sat-detail-extract",
-                    "search": {"rows": rows, "offs": offs, "fl": fields, "fq": fq, "count": count},
+                    "search": {"rows": rows, "offs": offs, "flRequested": fields, "flUsed": fields_used, "fq": fq, "count": count},
                     "chosen": chosen,
-                    "titleScore": best_sc
+                    "chosenBy": chosen_by,
+                    "titleScore": chosen_sc
                 });
                 let envelope = serde_json::json!({
                     "jsonrpc":"2.0","id": serde_json::Value::Null,
@@ -450,7 +537,7 @@ pub fn sat_pipeline(
                     "[meta] url={} chosen_title={} score={}",
                     url,
                     chosen.get("fascnm").and_then(|v| v.as_str()).unwrap_or(""),
-                    best_sc
+                    chosen_sc
                 );
             }
         } else {

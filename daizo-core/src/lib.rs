@@ -80,7 +80,10 @@ fn collect_xml_paths(root: &Path, filter: impl Fn(&Path, &str) -> bool + Sync) -
                 ignore::WalkState::Continue
             })
         });
-    paths.into_inner().unwrap()
+    let mut out = paths.into_inner().unwrap();
+    // Deterministic ordering; avoid run-to-run variation when callers later apply limits.
+    out.sort();
+    out
 }
 
 pub fn build_index(root: &Path, glob_hint: Option<&str>) -> Vec<IndexEntry> {
@@ -2402,6 +2405,26 @@ pub fn cbeta_grep(
     all_results
 }
 
+fn grep_sort_best_first(results: &mut Vec<GrepResult>, max_results: usize) {
+    // Prefer more matches, then stable file_id ordering.
+    let cmp = |a: &GrepResult, b: &GrepResult| match b.total_matches.cmp(&a.total_matches) {
+        std::cmp::Ordering::Equal => a.file_id.cmp(&b.file_id),
+        other => other,
+    };
+
+    if max_results == 0 {
+        results.clear();
+        return;
+    }
+    if results.len() > max_results {
+        // Keep only the best N candidates without sorting everything.
+        let nth = max_results - 1;
+        results.select_nth_unstable_by(nth, cmp);
+        results.truncate(max_results);
+    }
+    results.sort_by(cmp);
+}
+
 /// Helper struct for collecting ripgrep search matches
 #[derive(Debug, Clone)]
 struct RgMatch {
@@ -2477,7 +2500,7 @@ fn cbeta_grep_internal(
     let paths = collect_xml_paths(root, |_, name| name.ends_with(".xml"));
 
     // Search files in parallel using ripgrep
-    paths
+    let mut results: Vec<GrepResult> = paths
         .par_iter()
         .filter_map(|p| {
             let rg_matches = ripgrep_search_file(p, &matcher, max_matches_per_file)?;
@@ -2531,10 +2554,11 @@ fn cbeta_grep_internal(
                 fetch_hints,
             })
         })
-        .collect::<Vec<_>>()
-        .into_iter()
-        .take(max_results)
-        .collect()
+        .collect();
+
+    // Make selection deterministic; otherwise parallel walk + take(N) yields unstable sets.
+    grep_sort_best_first(&mut results, max_results);
+    results
 }
 
 fn cbeta_grep_internal_exclude_t(
@@ -2559,7 +2583,7 @@ fn cbeta_grep_internal_exclude_t(
     });
 
     // Search files in parallel using ripgrep
-    paths
+    let mut results: Vec<GrepResult> = paths
         .par_iter()
         .filter_map(|p| {
             let rg_matches = ripgrep_search_file(p, &matcher, max_matches_per_file)?;
@@ -2612,10 +2636,10 @@ fn cbeta_grep_internal_exclude_t(
                 fetch_hints,
             })
         })
-        .collect::<Vec<_>>()
-        .into_iter()
-        .take(max_results)
-        .collect()
+        .collect();
+
+    grep_sort_best_first(&mut results, max_results);
+    results
 }
 
 /// Helper to read file with UTF-16 support (for Tipitaka)
@@ -2992,5 +3016,31 @@ mod tests_cbeta_index_and_plain {
         let snippet = r##"<p>乙<g ref="#CB00416"/>丙</p>"##;
         let out = extract_cbeta_plain_from_snippet(snippet, &gaiji, false);
         assert_eq!(out, "乙佛丙");
+    }
+
+    #[test]
+    fn cbeta_grep_is_deterministic_and_variant_safe_under_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let t01 = dir.path().join("T").join("T01");
+        fs::create_dir_all(&t01).unwrap();
+        // Two T files with different match counts.
+        fs::write(t01.join("T01n0001.xml"), "<TEI>foo</TEI>\n").unwrap();
+        fs::write(t01.join("T01n0002.xml"), "<TEI>foo\nfoo</TEI>\n").unwrap();
+        // Non-T match should not outrank T results.
+        let a01 = dir.path().join("A").join("A01");
+        fs::create_dir_all(&a01).unwrap();
+        fs::write(a01.join("A01n0001.xml"), "<TEI>foo\nfoo\nfoo</TEI>\n").unwrap();
+
+        // Run multiple times; should always pick the same top-1 due to deterministic selection.
+        for _ in 0..10 {
+            let r = cbeta_grep(dir.path(), "foo", 1, 10);
+            assert_eq!(r.len(), 1);
+            assert_eq!(r[0].file_id, "T01n0002");
+        }
+
+        let r2 = cbeta_grep(dir.path(), "foo", 2, 10);
+        assert_eq!(r2.len(), 2);
+        assert_eq!(r2[0].file_id, "T01n0002");
+        assert_eq!(r2[1].file_id, "T01n0001");
     }
 }

@@ -2034,10 +2034,16 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
             let exact = args.get("exact").and_then(|v| v.as_bool()).unwrap_or(true);
             let rows = args.get("rows").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
             let offs = args.get("offs").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-            let fields = args
+            let fields_requested = args
                 .get("fields")
                 .and_then(|v| v.as_str())
                 .unwrap_or("id,fascnm,startid,endid,body");
+            // sat_pipeline selection relies on `body` and fetching relies on `startid`.
+            // Ensure required fields are present even if the user customizes `fields`.
+            let fields_used = sat_wrap7_ensure_fields(
+                fields_requested,
+                &["id", "fascnm", "startid", "endid", "body"],
+            );
             let fq: Vec<String> = args
                 .get("fq")
                 .and_then(|v| v.as_array())
@@ -2062,7 +2068,7 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
             } else {
                 qt.to_string()
             };
-            if let Some(jsonv) = sat_wrap7_search_json(&q_param, rows, offs, fields, &fq) {
+            if let Some(jsonv) = sat_wrap7_search_json(&q_param, rows, offs, &fields_used, &fq) {
                 let docs = jsonv
                     .get("response")
                     .and_then(|r| r.get("docs"))
@@ -2091,7 +2097,7 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                     "truncated": returned_end < total_chars,
                     "sourceUrl": url,
                     "extractionMethod": "sat-detail-extract",
-                    "search": {"q": qt, "qSent": q_param, "exact": exact, "rows": rows, "offs": offs, "fl": fields, "fq": fq, "count": count},
+                    "search": {"q": qt, "qSent": q_param, "exact": exact, "rows": rows, "offs": offs, "flRequested": fields_requested, "flUsed": fields_used, "fq": fq, "count": count},
                     "chosen": chosen,
                     "chosenBy": chosen_by,
                     "titleScore": best_sc
@@ -3343,6 +3349,21 @@ fn sat_wrap7_build_url(
     base.to_string()
 }
 
+fn sat_wrap7_ensure_fields(fields: &str, required: &[&str]) -> String {
+    let mut out: Vec<String> = fields
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    for r in required {
+        if !out.iter().any(|x| x == r) {
+            out.push((*r).to_string());
+        }
+    }
+    out.join(",")
+}
+
 fn sat_wrap7_search_json(
     q: &str,
     rows: usize,
@@ -3393,8 +3414,8 @@ fn sat_pick_best_doc(docs: &[serde_json::Value], query: &str) -> (usize, &'stati
     }
     let nq = normalized(query);
     let mut best_any: (usize, f32) = (0, -1.0);
-    let mut best_body: Option<(usize, f32)> = None;
-    let mut best_title_contains: Option<(usize, f32)> = None;
+    let mut first_body: Option<(usize, f32)> = None;
+    let mut first_title_contains: Option<(usize, f32)> = None;
     for (i, d) in docs.iter().enumerate() {
         let title = d.get("fascnm").and_then(|v| v.as_str()).unwrap_or("");
         let sc = title_score(title, query);
@@ -3404,23 +3425,19 @@ fn sat_pick_best_doc(docs: &[serde_json::Value], query: &str) -> (usize, &'stati
         if nq.is_empty() {
             continue;
         }
-        let title_contains = normalized(title).contains(&nq);
-        if title_contains {
-            if best_title_contains.map(|(_, bsc)| sc > bsc).unwrap_or(true) {
-                best_title_contains = Some((i, sc));
-            }
+        if first_title_contains.is_none() && normalized(title).contains(&nq) {
+            // Preserve wrap7 relevance order; avoid picking later titles only because of overlap.
+            first_title_contains = Some((i, sc));
         }
         let body = d.get("body").and_then(|v| v.as_str()).unwrap_or("");
-        if !body.is_empty() && normalized(body).contains(&nq) {
-            if best_body.map(|(_, bsc)| sc > bsc).unwrap_or(true) {
-                best_body = Some((i, sc));
-            }
+        if first_body.is_none() && !body.is_empty() && normalized(body).contains(&nq) {
+            first_body = Some((i, sc));
         }
     }
 
-    if let Some((i, sc)) = best_body {
+    if let Some((i, sc)) = first_body {
         (i, "bodyContains", sc)
-    } else if let Some((i, sc)) = best_title_contains {
+    } else if let Some((i, sc)) = first_title_contains {
         (i, "titleContains", sc)
     } else {
         (best_any.0, "titleScore", best_any.1)
@@ -3772,6 +3789,17 @@ mod tests {
         ];
         let (i, reason, _sc) = sat_pick_best_doc(&docs, "須弥山");
         assert_eq!(i, 1);
+        assert_eq!(reason, "bodyContains");
+    }
+
+    #[test]
+    fn sat_pick_best_doc_keeps_wrap7_order_within_body_contains() {
+        let docs = vec![
+            json!({"fascnm":"佛説長阿含經卷第十八", "startid":"a", "body":"...須彌山..."}),
+            json!({"fascnm":"須摩提女經", "startid":"b", "body":"...須彌山..."}),
+        ];
+        let (i, reason, _sc) = sat_pick_best_doc(&docs, "須彌山");
+        assert_eq!(i, 0);
         assert_eq!(reason, "bodyContains");
     }
 }
