@@ -10,6 +10,7 @@ use daizo_core::{
     list_heads_generic, tipitaka_grep, IndexEntry,
 };
 use encoding_rs::Encoding;
+use ewts::EwtsConverter;
 use regex::Regex;
 use reqwest::blocking::Client;
 use scraper::{Html, Selector};
@@ -341,6 +342,14 @@ fn tools_list() -> Vec<serde_json::Value> {
             "fields":{"type":"string"},
             "fq":{"type":"array","items":{"type":"string"}},
             "autoFetch":{"type":"boolean"}
+        },"required":["query"]})),
+        tool("tibetan_search", "Full-text search over Tibetan corpora (online). Use this when you want Tibetan full-text search without downloading corpora. Sources: adarshah, buda.", json!({"type":"object","properties":{
+            "query":{"type":"string","description":"Search query. Tibetan Unicode or EWTS/Wylie accepted (we may auto-convert EWTS to Unicode)."},
+            "sources":{"type":"array","items":{"type":"string","enum":["adarshah","buda"]},"description":"Search backends. Default: ['adarshah','buda']."},
+            "limit":{"type":"number","description":"Max total results (default: 10)"},
+            "exact":{"type":"boolean","description":"If true (default), prefer phrase/exact behavior when supported by the backend (currently BUDA)."},
+            "maxSnippetChars":{"type":"number","description":"Max snippet length in characters (default: 240). Use 0 to disable truncation."},
+            "wildcard":{"type":"boolean","description":"Adarshah-only: wildcard search (default false)."}
         },"required":["query"]})),
         tool("tipitaka_fetch", "Retrieve Tipitaka text. FAST: Use Nikāya codes directly (DN, MN, SN, AN, KN) without search. Examples: DN1, MN1, SN1, AN1. Or use file stems like s0101m.mul.", json!({"type":"object","properties":{
             "id":{"type":"string","description":"Nikāya code (DN, MN, SN, AN, KN) with optional number (e.g., DN1, MN1) or file stem (e.g., s0101m.mul). Use directly for fast access!"},
@@ -2271,6 +2280,112 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
             });
             return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": sliced}], "_meta": meta }});
         }
+        "tibetan_search" => {
+            let q = args
+                .get("query")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if q.is_empty() {
+                return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": "query is empty"}], "_meta": {"query": q, "count": 0, "results": []} }});
+            }
+            let sources: Vec<String> = args
+                .get("sources")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| vec!["adarshah".to_string(), "buda".to_string()]);
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+            let exact = args.get("exact").and_then(|v| v.as_bool()).unwrap_or(true);
+            let max_snippet_chars = args
+                .get("maxSnippetChars")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(240) as usize;
+            let wildcard = args
+                .get("wildcard")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            let mut variants: Vec<String> = vec![q.clone()];
+            if let Some(u) = ewts_to_unicode_best_effort(&q) {
+                if !variants.iter().any(|x| x == &u) {
+                    variants.push(u);
+                }
+            }
+
+            let mut results: Vec<serde_json::Value> = Vec::new();
+            let warnings: Vec<String> = Vec::new();
+
+            for src in sources.iter() {
+                match src.as_str() {
+                    "adarshah" => {
+                        for vq in variants.iter() {
+                            let mut r = adarshah_search_fulltext(vq, wildcard, limit, max_snippet_chars);
+                            results.append(&mut r);
+                        }
+                    }
+                    "buda" => {
+                        for vq in variants.iter() {
+                            let mut r = buda_search_fulltext(vq, exact, limit, max_snippet_chars);
+                            results.append(&mut r);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut uniq: Vec<serde_json::Value> = Vec::new();
+            for r in results.into_iter() {
+                let key = r
+                    .get("url")
+                    .and_then(|u| u.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| serde_json::to_string(&r).unwrap_or_default());
+                if seen.insert(key) {
+                    uniq.push(r);
+                }
+                if uniq.len() >= limit {
+                    break;
+                }
+            }
+
+            let mut summary = format!("Tibetan search for '{}'\n", q);
+            if uniq.is_empty() {
+                summary.push_str("0 results\n");
+            } else {
+                for (i, r) in uniq.iter().enumerate() {
+                    let src = r.get("source").and_then(|v| v.as_str()).unwrap_or("");
+                    let title = r.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                    let snip = r.get("snippet").and_then(|v| v.as_str()).unwrap_or("");
+                    let url = r.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                    if !title.is_empty() {
+                        summary.push_str(&format!("{}. [{}] {}  {}\n", i + 1, src, title, url));
+                    } else {
+                        summary.push_str(&format!("{}. [{}] {}\n", i + 1, src, url));
+                    }
+                    if !snip.is_empty() {
+                        summary.push_str(&format!("   {}\n", snip.replace('\n', " ")));
+                    }
+                }
+            }
+
+            let meta = json!({
+                "query": q,
+                "variants": variants,
+                "sources": sources,
+                "exact": exact,
+                "maxSnippetChars": max_snippet_chars,
+                "warnings": if warnings.is_empty() { None::<Vec<String>> } else { Some(warnings) },
+                "count": uniq.len(),
+                "results": uniq
+            });
+            return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary}], "_meta": meta }});
+        }
         "sat_pipeline" => {
             let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
             let exact = args.get("exact").and_then(|v| v.as_bool()).unwrap_or(true);
@@ -3585,6 +3700,367 @@ fn http_get_with_retry(url: &str, max_retries: u32) -> Option<String> {
     }
 }
 
+fn tibetan_ewts_converter() -> &'static EwtsConverter {
+    static CONV: OnceLock<EwtsConverter> = OnceLock::new();
+    CONV.get_or_init(EwtsConverter::create)
+}
+
+fn looks_like_ewts(s: &str) -> bool {
+    let t = s.trim();
+    if t.is_empty() {
+        return false;
+    }
+    // Heuristic: ASCII-only and not just digits/symbols.
+    let mut letters = 0usize;
+    for ch in t.chars() {
+        if !ch.is_ascii() {
+            return false;
+        }
+        if ch.is_ascii_alphabetic() {
+            letters += 1;
+        }
+    }
+    letters >= 2
+}
+
+fn ewts_to_unicode_best_effort(s: &str) -> Option<String> {
+    if !looks_like_ewts(s) {
+        return None;
+    }
+    let conv = tibetan_ewts_converter();
+    let out = conv.ewts_to_unicode(s);
+    if out.trim().is_empty() || out == s {
+        return None;
+    }
+    Some(out)
+}
+
+fn strip_html_mark(s: &str) -> String {
+    s.replace("<mark>", "").replace("</mark>", "")
+}
+
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return "".to_string();
+    }
+    let mut out = String::new();
+    for (i, ch) in s.chars().enumerate() {
+        if i >= max_chars {
+            break;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn adarshah_build_link(
+    kdb: &str,
+    sutra: &str,
+    pb: &str,
+    sutra_type: Option<&str>,
+    highlight: &str,
+) -> Option<String> {
+    let base = "https://online.adarshah.org/index.html";
+    let kdb_enc = urlencoding::encode(kdb);
+    let sutra_enc = urlencoding::encode(sutra);
+    let pb_enc = urlencoding::encode(pb);
+    let hl_enc = urlencoding::encode(highlight);
+    match sutra_type.unwrap_or("sutra") {
+        "voltext" => Some(format!(
+            "{base}?kdb={kdb_enc}&voltext={sutra_enc}&page={pb_enc}&highlight={hl_enc}"
+        )),
+        _ => Some(format!(
+            "{base}?kdb={kdb_enc}&sutra={sutra_enc}&page={pb_enc}&highlight={hl_enc}"
+        )),
+    }
+}
+
+fn adarshah_search_fulltext(
+    query: &str,
+    wildcard: bool,
+    limit: usize,
+    max_snippet_chars: usize,
+) -> Vec<serde_json::Value> {
+    // Reverse-engineered from https://online.adarshah.org/js/api.js + token.js
+    const API_KEY: &str = "ZTI3Njg0NTNkZDRlMTJjMWUzNGM3MmM5ZGI3ZDUxN2E=";
+    const URL: &str = "https://api.adarshah.org/plugins/adarshaplugin/file_servlet/search/esSearch?";
+
+    let client = http_client();
+    throttle(200);
+
+    let params: Vec<(&str, String)> = vec![
+        ("apiKey", API_KEY.to_string()),
+        ("token", "".to_string()),
+        ("text", query.to_string()),
+        (
+            "wildcard",
+            if wildcard { "true" } else { "false" }.to_string(),
+        ),
+    ];
+
+    let resp = client.post(URL).form(&params).send();
+    let Ok(resp) = resp else {
+        return Vec::new();
+    };
+    if !resp.status().is_success() {
+        return Vec::new();
+    }
+    let Ok(body) = resp.text() else {
+        return Vec::new();
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) else {
+        return Vec::new();
+    };
+
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    let hits = v
+        .get("hits")
+        .and_then(|h| h.get("hits"))
+        .and_then(|x| x.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    for h in hits.into_iter().take(limit) {
+        let score = h.get("_score").and_then(|x| x.as_f64()).unwrap_or(0.0);
+        let fields = h.get("fields").cloned().unwrap_or(json!({}));
+        let kdb = fields
+            .get("kdb")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let sutra = fields
+            .get("sutra")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let pb = fields
+            .get("pb")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let sutra_type = fields
+            .get("sutraType")
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string());
+
+        let highlight_obj = h.get("highlight").cloned().unwrap_or(json!({}));
+        let mut snippet = String::new();
+        if let Some(arr) = highlight_obj.get("text").and_then(|x| x.as_array()) {
+            for s in arr.iter().filter_map(|x| x.as_str()) {
+                snippet.push_str(s);
+            }
+        } else if let Some(arr) = highlight_obj.get("textWildcard").and_then(|x| x.as_array()) {
+            for s in arr.iter().filter_map(|x| x.as_str()) {
+                snippet.push_str(s);
+            }
+        } else if let Some(s) = highlight_obj.get("text").and_then(|x| x.as_str()) {
+            snippet.push_str(s);
+        } else if let Some(s) = highlight_obj.get("textWildcard").and_then(|x| x.as_str()) {
+            snippet.push_str(s);
+        }
+        snippet = strip_html_mark(&snippet);
+        if max_snippet_chars > 0 && snippet.chars().count() > max_snippet_chars {
+            snippet = truncate_chars(&snippet, max_snippet_chars);
+        }
+
+        let title = fields
+            .get("tname")
+            .and_then(|x| x.as_str())
+            .or_else(|| fields.get("cname").and_then(|x| x.as_str()))
+            .unwrap_or("")
+            .to_string();
+
+        let url = if !kdb.is_empty() && !sutra.is_empty() && !pb.is_empty() {
+            adarshah_build_link(&kdb, &sutra, &pb, sutra_type.as_deref(), query)
+        } else {
+            None
+        };
+
+        out.push(json!({
+            "source": "adarshah",
+            "score": score,
+            "query": query,
+            "title": title,
+            "kdb": kdb,
+            "sutra": sutra,
+            "pb": pb,
+            "sutraType": sutra_type,
+            "snippet": snippet,
+            "url": url
+        }));
+    }
+    out
+}
+
+fn buda_norm_id(s: &str) -> String {
+    let t = s.trim();
+    t.strip_prefix("bdr:").unwrap_or(t).to_string()
+}
+
+fn buda_extract_id_from_hit(h: &serde_json::Value) -> Option<String> {
+    // Prefer explicit id fields, then routing, then parse from _id.
+    let src = h.get("_source")?;
+    if let Some(id) = src
+        .get("inRootInstance")
+        .and_then(|x| x.as_array())
+        .and_then(|a| a.first())
+        .and_then(|x| x.as_str())
+    {
+        let idn = buda_norm_id(id);
+        if !idn.is_empty() {
+            return Some(idn);
+        }
+    }
+    if let Some(r) = h.get("_routing").and_then(|x| x.as_str()) {
+        let idn = buda_norm_id(r);
+        if !idn.is_empty() {
+            return Some(idn);
+        }
+    }
+    if let Some(raw) = h.get("_id").and_then(|x| x.as_str()) {
+        // Often looks like: MW3MS701_O3MS701_...
+        if let Some(prefix) = raw.split('_').next() {
+            let idn = buda_norm_id(prefix);
+            if idn.starts_with("MW") && idn.len() >= 4 {
+                return Some(idn);
+            }
+        }
+    }
+    None
+}
+
+fn buda_query_string(q: &str, exact: bool) -> String {
+    let t = q.trim();
+    if t.is_empty() {
+        return "".to_string();
+    }
+    // query_string syntax: escape backslash and quotes.
+    let escaped = t.replace('\\', "\\\\").replace('"', "\\\"");
+    if exact {
+        format!("\"{}\"", escaped)
+    } else {
+        escaped
+    }
+}
+
+fn buda_search_fulltext(query: &str, exact: bool, limit: usize, max_snippet_chars: usize) -> Vec<serde_json::Value> {
+    // BUDA (BDRC) search proxy. Reverse-engineered from library.bdrc.io bundles:
+    // POST https://autocomplete.bdrc.io/_msearch with Basic auth + NDJSON body.
+    //
+    // Notes:
+    // - The backend seems to accept query_string queries for Tibetan Unicode.
+    // - Returned docs are not raw etext chunks; they often include `comment` (context-ish),
+    //   `prefLabel_bo_x_ewts` (title-ish), and `inRootInstance` (work-ish id).
+    const URL: &str = "https://autocomplete.bdrc.io/_msearch";
+    const AUTH_BASIC: &str = "Basic cHVibGljcXVlcnk6MFZzZzFRdmpMa1RDenZ0bA==";
+
+    let q = query.trim();
+    if q.is_empty() || limit == 0 {
+        return Vec::new();
+    }
+
+    // Use query_string; avoid complicated DSL that sometimes 500s.
+    let qsent = buda_query_string(q, exact);
+    if qsent.is_empty() {
+        return Vec::new();
+    }
+    let q_obj = json!({
+        "size": limit,
+        "query": {
+            "query_string": { "query": qsent }
+        }
+    });
+    let body = format!("{{}}\n{}\n", serde_json::to_string(&q_obj).unwrap_or_else(|_| "{}".to_string()));
+
+    let client = http_client();
+    throttle(200);
+    let resp = client
+        .post(URL)
+        .header("Authorization", AUTH_BASIC)
+        .header("Content-Type", "application/x-ndjson")
+        .body(body)
+        .send();
+    let Ok(resp) = resp else {
+        return Vec::new();
+    };
+    if !resp.status().is_success() {
+        return Vec::new();
+    }
+    let Ok(text) = resp.text() else {
+        return Vec::new();
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Vec::new();
+    };
+
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    let hits = v
+        .get("responses")
+        .and_then(|r| r.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|r0| r0.get("hits"))
+        .and_then(|h| h.get("hits"))
+        .and_then(|x| x.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    for h in hits.into_iter().take(limit) {
+        let score = h.get("_score").and_then(|x| x.as_f64()).unwrap_or(0.0);
+        let src = h.get("_source").cloned().unwrap_or(json!({}));
+
+        let title_ewts = src
+            .get("prefLabel_bo_x_ewts")
+            .and_then(|x| x.as_array())
+            .and_then(|a| a.first())
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let title_bo = if title_ewts.is_empty() {
+            "".to_string()
+        } else {
+            tibetan_ewts_converter().ewts_to_unicode(&title_ewts)
+        };
+
+        let snippet = src
+            .get("comment")
+            .and_then(|x| x.as_array())
+            .and_then(|a| a.first())
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let snippet = if max_snippet_chars > 0 && snippet.chars().count() > max_snippet_chars {
+            truncate_chars(&snippet, max_snippet_chars)
+        } else {
+            snippet
+        };
+
+        let root = buda_extract_id_from_hit(&h).unwrap_or_default();
+
+        let url = if !root.is_empty() {
+            Some(format!(
+                "https://library.bdrc.io/show/bdr:{}",
+                urlencoding::encode(&root)
+            ))
+        } else {
+            None
+        };
+
+        out.push(json!({
+            "source": "buda",
+            "score": score,
+            "query": q,
+            "qSent": qsent,
+            "exact": exact,
+            "title": if !title_bo.is_empty() { title_bo } else { title_ewts.clone() },
+            "title_ewts": if title_ewts.is_empty() { None::<String> } else { Some(title_ewts) },
+            "id": root,
+            "snippet": snippet,
+            "url": url
+        }));
+    }
+    out
+}
+
 fn sat_fetch(url: &str) -> String {
     let cpath = cache_path_for(url);
     if let Ok(s) = fs::read_to_string(&cpath) {
@@ -3663,6 +4139,54 @@ fn sat_wrap7_search_json(
         return None;
     }
     serde_json::from_str::<serde_json::Value>(&body).ok()
+}
+
+#[cfg(test)]
+mod tibetan_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_truncate_chars_unicode() {
+        assert_eq!(truncate_chars("abc", 2), "ab");
+        assert_eq!(truncate_chars("あいう", 2), "あい");
+    }
+
+    #[test]
+    fn test_buda_query_string_exact_escapes() {
+        assert_eq!(buda_query_string(" foo ", true), "\"foo\"");
+        assert_eq!(buda_query_string("a\"b", true), "\"a\\\"b\"");
+        assert_eq!(buda_query_string("a\\b", true), "\"a\\\\b\"");
+        assert_eq!(buda_query_string("x", false), "x");
+    }
+
+    #[test]
+    fn test_buda_extract_id_from_hit_prefers_in_root_instance() {
+        let h = json!({
+            "_id": "MW3MS701_O3MS701_foo",
+            "_routing": "bdr:MWROUTING",
+            "_source": { "inRootInstance": ["bdr:MWINROOT"] }
+        });
+        assert_eq!(buda_extract_id_from_hit(&h).as_deref(), Some("MWINROOT"));
+    }
+
+    #[test]
+    fn test_buda_extract_id_from_hit_falls_back_to_routing() {
+        let h = json!({
+            "_routing": "bdr:MWROUTING",
+            "_source": { "inRootInstance": [] }
+        });
+        assert_eq!(buda_extract_id_from_hit(&h).as_deref(), Some("MWROUTING"));
+    }
+
+    #[test]
+    fn test_buda_extract_id_from_hit_falls_back_to_id_prefix() {
+        let h = json!({
+            "_id": "MW3MS701_O3MS701_foo",
+            "_source": {}
+        });
+        assert_eq!(buda_extract_id_from_hit(&h).as_deref(), Some("MW3MS701"));
+    }
 }
 
 fn sat_detail_build_url(useid: &str) -> String {

@@ -1,6 +1,6 @@
 [package]
 name = "daizo-mcp"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 
@@ -14,6 +14,7 @@ sha1 = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
 scraper = "0.24"
 daizo-core = { path = "../daizo-core" }
+ewts = "0.1.3"
 unicode-normalization = "0.1"
 urlencoding = "2.1"
 url = "2.5"
