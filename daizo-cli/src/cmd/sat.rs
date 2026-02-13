@@ -1,6 +1,9 @@
 use crate::{slice_text_cli, SliceArgs};
 use daizo_core::path_resolver::cache_dir;
-use daizo_core::text_utils::{is_subsequence, jaccard, normalized, token_jaccard};
+use daizo_core::text_utils::{
+    find_highlight_positions, is_subsequence, jaccard, normalized, token_jaccard,
+    ws_cjk_variant_fuzzy_regex_literal,
+};
 use std::path::PathBuf;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -499,7 +502,29 @@ pub fn sat_pipeline(
             }
 
             let chosen = &docs[chosen_i];
-            let start = start_char.unwrap_or(0);
+            let start_requested = start_char.unwrap_or(0);
+            let mut start = start_requested;
+            let q_focus = query
+                .trim()
+                .strip_prefix('"')
+                .and_then(|s| s.strip_suffix('"'))
+                .unwrap_or(query)
+                .trim();
+            let mut focus = serde_json::json!({"enabled": false});
+            if start_char.is_none() && !q_focus.is_empty() {
+                let pat = ws_cjk_variant_fuzzy_regex_literal(q_focus);
+                if let Some(p0) = find_highlight_positions(&t, &pat, true).into_iter().next() {
+                    start = p0.start_char.saturating_sub(50);
+                    focus = serde_json::json!({
+                        "enabled": true,
+                        "query": q_focus,
+                        "pattern": pat,
+                        "matchStartChar": p0.start_char,
+                        "matchEndChar": p0.end_char,
+                        "startChar": start
+                    });
+                }
+            }
             let args = SliceArgs {
                 page: None,
                 page_size: None,
@@ -524,7 +549,9 @@ pub fn sat_pipeline(
                     "search": {"rows": rows, "offs": offs, "flRequested": fields, "flUsed": fields_used, "fq": fq, "count": count},
                     "chosen": chosen,
                     "chosenBy": chosen_by,
-                    "titleScore": chosen_sc
+                    "titleScore": chosen_sc,
+                    "focus": focus,
+                    "startCharRequested": start_requested
                 });
                 let envelope = serde_json::json!({
                     "jsonrpc":"2.0","id": serde_json::Value::Null,

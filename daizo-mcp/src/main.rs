@@ -1,7 +1,7 @@
 use anyhow::Result;
 use daizo_core::text_utils::{
-    compute_match_score_sanskrit, is_subsequence, jaccard, normalized, token_jaccard,
-    ws_cjk_variant_fuzzy_regex_literal,
+    compute_match_score_sanskrit, find_highlight_positions, is_subsequence, jaccard, normalized,
+    token_jaccard, ws_cjk_variant_fuzzy_regex_literal,
 };
 use daizo_core::{
     build_cbeta_index, build_gretil_index, build_tipitaka_index, cbeta_gaiji_map_fast, cbeta_grep,
@@ -622,6 +622,200 @@ fn best_match_gretil<'a>(entries: &'a [IndexEntry], q: &str, limit: usize) -> Ve
         .collect()
 }
 
+#[derive(Clone, Copy)]
+struct ResolveCrosswalk {
+    key: &'static str,
+    aliases: &'static [&'static str],
+    cbeta_id: Option<&'static str>,
+    cbeta_title: Option<&'static str>,
+    tipitaka_id: Option<&'static str>,
+    tipitaka_title: Option<&'static str>,
+    gretil_id: Option<&'static str>,
+    gretil_title: Option<&'static str>,
+}
+
+// Curated cross-corpus aliases for daizo_resolve. Keep this small and high precision.
+static RESOLVE_CROSSWALK: &[ResolveCrosswalk] = &[
+    ResolveCrosswalk {
+        key: "heart-sutra",
+        aliases: &[
+            "般若心経",
+            "般若心經",
+            "般若波羅蜜多心経",
+            "般若波羅蜜多心經",
+            "T0251",
+            "T08n0251",
+            "prajJApAramitAhRdayasUtra",
+            "sa_prajJApAramitAhRdayasUtra",
+            "Heart Sutra",
+        ],
+        cbeta_id: Some("T0251"),
+        cbeta_title: Some("般若波羅蜜多心經"),
+        tipitaka_id: None,
+        tipitaka_title: None,
+        gretil_id: Some("prajJApAramitAhRdayasUtra"),
+        gretil_title: Some("Prajñāpāramitāhṛdayasūtra"),
+    },
+    ResolveCrosswalk {
+        key: "diamond-sutra",
+        aliases: &[
+            "金剛経",
+            "金剛經",
+            "金剛般若経",
+            "金剛般若經",
+            "金剛般若波羅蜜経",
+            "金剛般若波羅蜜經",
+            "T0235",
+            "T08n0235",
+            "vajracchedikA",
+            "sa_vajracchedikA-prajJApAramitA",
+            "Diamond Sutra",
+        ],
+        cbeta_id: Some("T0235"),
+        cbeta_title: Some("金剛般若波羅蜜經"),
+        tipitaka_id: None,
+        tipitaka_title: None,
+        gretil_id: Some("vajracchedikA"),
+        gretil_title: Some("Vajracchedikā"),
+    },
+    ResolveCrosswalk {
+        key: "lotus-sutra",
+        aliases: &[
+            "法華経",
+            "法華經",
+            "妙法蓮華経",
+            "妙法蓮華經",
+            "T0262",
+            "T09n0262",
+            "saddharmapuNDarIka",
+            "sa_saddharmapuNDarIka",
+            "Lotus Sutra",
+        ],
+        cbeta_id: Some("T0262"),
+        cbeta_title: Some("妙法蓮華經"),
+        tipitaka_id: None,
+        tipitaka_title: None,
+        gretil_id: Some("saddharmapuNDarIka"),
+        gretil_title: Some("Saddharmapuṇḍarīka"),
+    },
+    ResolveCrosswalk {
+        key: "lankavatara-sutra",
+        aliases: &[
+            "楞伽経",
+            "楞伽經",
+            "楞伽阿跋多羅宝経",
+            "楞伽阿跋多羅寶經",
+            "T0670",
+            "T16n0670",
+            "laGkAvatArasUtra",
+            "saddharmalaGkAvatArasUtra",
+        ],
+        cbeta_id: Some("T0670"),
+        cbeta_title: Some("楞伽阿跋多羅寶經"),
+        tipitaka_id: None,
+        tipitaka_title: None,
+        gretil_id: Some("laGkAvatArasUtra"),
+        gretil_title: Some("Laṅkāvatārasūtra"),
+    },
+];
+
+fn resolve_crosswalk_candidates(
+    q: &str,
+    sources: &[String],
+    prefer_source: Option<&str>,
+) -> Vec<(f32, serde_json::Value)> {
+    let nq = normalized(q);
+    if nq.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<(f32, serde_json::Value)> = Vec::new();
+    for cw in RESOLVE_CROSSWALK.iter() {
+        let mut hit = false;
+        for a in cw.aliases.iter() {
+            let na = normalized(a);
+            if na.is_empty() {
+                continue;
+            }
+            // High-precision: exact match OR containment with a minimum length.
+            if na == nq || (nq.len() >= 6 && (na.contains(&nq) || nq.contains(&na))) {
+                hit = true;
+                break;
+            }
+        }
+        if !hit {
+            continue;
+        }
+
+        if sources.iter().any(|s| s == "cbeta") {
+            if let Some(id) = cw.cbeta_id {
+                let bias = if prefer_source == Some("cbeta") {
+                    0.02
+                } else {
+                    0.0
+                };
+                let boost = if normalized(id) == nq { 0.05 } else { 0.0 };
+                out.push((
+                    1.05 + bias + boost,
+                    json!({
+                        "source": "cbeta",
+                        "id": id,
+                        "title": cw.cbeta_title,
+                        "score": 1.0,
+                        "fetch": {"tool": "cbeta_fetch", "args": {"id": id}},
+                        "resolvedBy": "crosswalk",
+                        "key": cw.key
+                    }),
+                ));
+            }
+        }
+        if sources.iter().any(|s| s == "tipitaka") {
+            if let Some(id) = cw.tipitaka_id {
+                let bias = if prefer_source == Some("tipitaka") {
+                    0.02
+                } else {
+                    0.0
+                };
+                let boost = if normalized(id) == nq { 0.05 } else { 0.0 };
+                out.push((
+                    1.05 + bias + boost,
+                    json!({
+                        "source": "tipitaka",
+                        "id": id,
+                        "title": cw.tipitaka_title,
+                        "score": 1.0,
+                        "fetch": {"tool": "tipitaka_fetch", "args": {"id": id}},
+                        "resolvedBy": "crosswalk",
+                        "key": cw.key
+                    }),
+                ));
+            }
+        }
+        if sources.iter().any(|s| s == "gretil") {
+            if let Some(id) = cw.gretil_id {
+                let bias = if prefer_source == Some("gretil") {
+                    0.02
+                } else {
+                    0.0
+                };
+                let boost = if normalized(id) == nq { 0.05 } else { 0.0 };
+                out.push((
+                    1.05 + bias + boost,
+                    json!({
+                        "source": "gretil",
+                        "id": id,
+                        "title": cw.gretil_title,
+                        "score": 1.0,
+                        "fetch": {"tool": "gretil_fetch", "args": {"id": id}},
+                        "resolvedBy": "crosswalk",
+                        "key": cw.key
+                    }),
+                ));
+            }
+        }
+    }
+    out
+}
+
 // jaccard and is_subsequence moved to daizo_core::text_utils
 
 // resolve_cbeta_path moved to daizo_core::path_resolver
@@ -800,7 +994,10 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                 .map(|s| s.to_string());
             let min_score = args.get("minScore").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
 
+            let mut cands_scored: Vec<(f32, serde_json::Value)> = Vec::new();
+
             // Direct ID detection (fast path)
+            let mut direct_id_mode = false;
             let q_nospace = q.split_whitespace().collect::<String>();
             let q_upper = q_nospace.to_ascii_uppercase();
             // CBETA: T + 1-4 digits
@@ -813,15 +1010,21 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                 if !digits.is_empty() {
                     if let Ok(n) = digits.parse::<u32>() {
                         let id_norm = format!("T{:04}", n);
+                        let bias = if prefer_source.as_deref() == Some("cbeta") {
+                            0.02
+                        } else {
+                            0.0
+                        };
                         let cand = json!({
-                            "source": "cbeta",
-                            "id": id_norm,
-                            "title": null,
-                            "score": 1.0,
-                            "fetch": {"tool": "cbeta_fetch", "args": {"id": format!("T{:04}", n)}},
-                            "resolvedBy": "direct-id"
+                                "source": "cbeta",
+                                "id": id_norm,
+                                "title": null,
+                                "score": 1.0,
+                                "fetch": {"tool": "cbeta_fetch", "args": {"id": format!("T{:04}", n)}},
+                                "resolvedBy": "direct-id"
                         });
-                        return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": format!("Resolved '{}' as CBETA id {}", q, cand["id"].as_str().unwrap_or(""))}], "_meta": {"query": q, "count": 1, "candidates": [cand.clone()], "pick": cand } }});
+                        cands_scored.push((1.20 + bias, cand));
+                        direct_id_mode = true;
                     }
                 }
             }
@@ -834,6 +1037,11 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                         if !digits.is_empty() {
                             if let Ok(n) = digits.parse::<u32>() {
                                 let id_norm = format!("{}{}", pref, n);
+                                let bias = if prefer_source.as_deref() == Some("tipitaka") {
+                                    0.02
+                                } else {
+                                    0.0
+                                };
                                 let cand = json!({
                                     "source": "tipitaka",
                                     "id": id_norm,
@@ -842,7 +1050,8 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                                     "fetch": {"tool": "tipitaka_fetch", "args": {"id": format!("{}{}", pref, n)}},
                                     "resolvedBy": "direct-id"
                                 });
-                                return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": format!("Resolved '{}' as Tipitaka id {}", q, cand["id"].as_str().unwrap_or(""))}], "_meta": {"query": q, "count": 1, "candidates": [cand.clone()], "pick": cand } }});
+                                cands_scored.push((1.20 + bias, cand));
+                                direct_id_mode = true;
                             }
                         }
                     }
@@ -854,6 +1063,11 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                 && !q_nospace.contains(' ')
             {
                 let stem = q_nospace.clone();
+                let bias = if prefer_source.as_deref() == Some("tipitaka") {
+                    0.02
+                } else {
+                    0.0
+                };
                 let cand = json!({
                     "source": "tipitaka",
                     "id": stem,
@@ -862,11 +1076,20 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                     "fetch": {"tool": "tipitaka_fetch", "args": {"id": q_nospace}},
                     "resolvedBy": "direct-id"
                 });
-                return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": format!("Resolved '{}' as Tipitaka file stem {}", q, cand["id"].as_str().unwrap_or(""))}], "_meta": {"query": q, "count": 1, "candidates": [cand.clone()], "pick": cand } }});
+                cands_scored.push((1.20 + bias, cand));
+                direct_id_mode = true;
             }
 
-            let mut cands_scored: Vec<(f32, serde_json::Value)> = Vec::new();
-            if sources.iter().any(|s| s == "cbeta") {
+            // Cheap cross-corpus aliases (no index load).
+            cands_scored.extend(resolve_crosswalk_candidates(
+                q,
+                &sources,
+                prefer_source.as_deref(),
+            ));
+
+            // If the query is already a direct ID/file stem, avoid loading large title indexes
+            // unless the caller explicitly wants more via higher limits.
+            if !direct_id_mode && sources.iter().any(|s| s == "cbeta") {
                 let idx = load_or_build_cbeta_index();
                 for h in best_match(&idx, q, limit_per_source) {
                     if h.score < min_score {
@@ -889,7 +1112,7 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                     cands_scored.push((h.score + bias, v));
                 }
             }
-            if sources.iter().any(|s| s == "tipitaka") {
+            if !direct_id_mode && sources.iter().any(|s| s == "tipitaka") {
                 let idx = load_or_build_tipitaka_index();
                 for h in best_match_tipitaka(&idx, q, limit_per_source) {
                     if h.score < min_score {
@@ -918,7 +1141,7 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                     cands_scored.push((h.score + bias, v));
                 }
             }
-            if sources.iter().any(|s| s == "gretil") {
+            if !direct_id_mode && sources.iter().any(|s| s == "gretil") {
                 let idx = load_or_build_gretil_index();
                 for h in best_match_gretil(&idx, q, limit_per_source) {
                     if h.score < min_score {
@@ -944,10 +1167,29 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
             }
 
             cands_scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-            let mut candidates: Vec<serde_json::Value> =
-                cands_scored.into_iter().map(|(_, v)| v).collect();
-            if candidates.len() > limit_total {
-                candidates.truncate(limit_total);
+            let mut candidates: Vec<serde_json::Value> = Vec::new();
+            let mut seen: std::collections::HashSet<(String, String)> =
+                std::collections::HashSet::new();
+            for (_s, v) in cands_scored.into_iter() {
+                let src = v
+                    .get("source")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let cid = v
+                    .get("id")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if src.is_empty() || cid.is_empty() {
+                    continue;
+                }
+                if seen.insert((src, cid)) {
+                    candidates.push(v);
+                }
+                if candidates.len() >= limit_total {
+                    break;
+                }
             }
             let pick = candidates.first().cloned();
 
@@ -2053,7 +2295,12 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                         .collect()
                 })
                 .unwrap_or_default();
-            let start = args.get("startChar").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let start_char_opt = args
+                .get("startChar")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize);
+            let start_char_provided = start_char_opt.is_some();
+            let start_requested = start_char_opt.unwrap_or(0);
             let maxc = args
                 .get("maxChars")
                 .and_then(|v| v.as_u64())
@@ -2083,8 +2330,35 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                 let useid = chosen.get("startid").and_then(|v| v.as_str()).unwrap_or("");
                 let url = sat_detail_build_url(useid);
                 let t = sat_fetch(&url);
+                let q_focus = qt
+                    .trim()
+                    .strip_prefix('"')
+                    .and_then(|s| s.strip_suffix('"'))
+                    .unwrap_or(qt)
+                    .trim();
+                let mut focus = json!({"enabled": false});
+                let start_eff = if start_char_provided || q_focus.is_empty() {
+                    start_requested
+                } else {
+                    let pat = ws_cjk_variant_fuzzy_regex_literal(q_focus);
+                    let pos = find_highlight_positions(&t, &pat, true).into_iter().next();
+                    if let Some(p0) = pos {
+                        let s = p0.start_char.saturating_sub(50);
+                        focus = json!({
+                            "enabled": true,
+                            "query": q_focus,
+                            "pattern": pat,
+                            "matchStartChar": p0.start_char as u64,
+                            "matchEndChar": p0.end_char as u64,
+                            "startChar": s as u64
+                        });
+                        s
+                    } else {
+                        start_requested
+                    }
+                };
                 let (sliced, total_chars, returned_start, returned_end) =
-                    slice_text_bounds(&t, start, maxc);
+                    slice_text_bounds(&t, start_eff, maxc);
                 let count = jsonv
                     .get("response")
                     .and_then(|r| r.get("numFound"))
@@ -2100,7 +2374,9 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                     "search": {"q": qt, "qSent": q_param, "exact": exact, "rows": rows, "offs": offs, "flRequested": fields_requested, "flUsed": fields_used, "fq": fq, "count": count},
                     "chosen": chosen,
                     "chosenBy": chosen_by,
-                    "titleScore": best_sc
+                    "titleScore": best_sc,
+                    "focus": focus,
+                    "startCharRequested": start_requested as u64
                 });
                 return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": sliced}], "_meta": meta }});
             } else {
