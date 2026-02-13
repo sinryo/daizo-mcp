@@ -23,4 +23,3 @@ fn main() {
     // ビルドのたびに再実行
     println!("cargo:rerun-if-changed=build.rs");
 }
-

@@ -584,6 +584,70 @@ pub fn build_gretil_index(root: &Path) -> Vec<IndexEntry> {
         .collect()
 }
 
+#[derive(Clone, Debug)]
+struct HeaderTitleCandidate {
+    text: String,
+    lang: Option<String>,
+}
+
+fn cbeta_cjk_ratio(s: &str) -> f32 {
+    let mut total = 0usize;
+    let mut cjk = 0usize;
+    for ch in s.chars() {
+        if ch.is_whitespace() {
+            continue;
+        }
+        total += 1;
+        // CJK Unified Ideographs + Extension A (good enough for titles)
+        if ('\u{4E00}'..='\u{9FFF}').contains(&ch) || ('\u{3400}'..='\u{4DBF}').contains(&ch) {
+            cjk += 1;
+        }
+    }
+    if total == 0 {
+        0.0
+    } else {
+        (cjk as f32) / (total as f32)
+    }
+}
+
+fn cbeta_title_contains_collection_keywords(s: &str) -> bool {
+    // Use normalized() to fold diacritics (e.g., Tripiṭaka -> tripitaka).
+    let hay = crate::text_utils::normalized(s);
+    hay.contains("tripitaka") || hay.contains("taisho") || hay.contains("canon")
+}
+
+fn pick_best_cbeta_header_title(cands: &[HeaderTitleCandidate]) -> Option<String> {
+    let mut best: Option<(&HeaderTitleCandidate, f32)> = None;
+    for c in cands {
+        if c.text.trim().is_empty() {
+            continue;
+        }
+        let mut sc = 0.0f32;
+        if let Some(lang) = &c.lang {
+            let l = lang.to_lowercase();
+            if l.starts_with("zh") {
+                sc += 3.0;
+            } else if l.starts_with("ja") {
+                sc += 2.0;
+            } else {
+                sc += 0.5;
+            }
+        }
+        sc += cbeta_cjk_ratio(&c.text) * 2.0;
+        if cbeta_title_contains_collection_keywords(&c.text) {
+            sc -= 2.0;
+        }
+        // Small length bonus to prefer informative (non-empty) titles.
+        sc += (c.text.chars().count().min(30) as f32) / 100.0;
+        match best {
+            None => best = Some((c, sc)),
+            Some((_, bsc)) if sc > bsc => best = Some((c, sc)),
+            _ => {}
+        }
+    }
+    best.map(|(c, _)| c.text.clone())
+}
+
 // CBETA 用: TEI ヘッダや本文の構造からメタ情報を抽出してインデックスを高精度化
 pub fn build_cbeta_index(root: &Path) -> Vec<IndexEntry> {
     let paths = collect_xml_paths(root, |_, name| name.ends_with(".xml"));
@@ -598,7 +662,7 @@ pub fn build_cbeta_index(root: &Path) -> Vec<IndexEntry> {
             let mut buf = Vec::new();
 
             let mut id: Option<String> = None;
-            let mut title_header: Option<String> = None;
+            let mut titles: Vec<HeaderTitleCandidate> = Vec::new();
             let mut author: Option<String> = None;
             let mut editor: Option<String> = None;
             // respStmt aggregation (role + names)
@@ -616,6 +680,8 @@ pub fn build_cbeta_index(root: &Path) -> Vec<IndexEntry> {
 
             let mut path_stack: Vec<Vec<u8>> = Vec::new();
             let mut in_title_header = false;
+            let mut title_lang: Option<String> = None;
+            let mut title_buf = String::new();
             let mut in_author = false;
             let mut in_editor = false;
             let mut in_publisher = false;
@@ -644,6 +710,8 @@ pub fn build_cbeta_index(root: &Path) -> Vec<IndexEntry> {
                                 && path_stack.iter().any(|n| n.as_slice() == b"teiHeader")
                             {
                                 in_title_header = true;
+                                title_buf.clear();
+                                title_lang = attr_val(&e, b"xml:lang").map(|v| v.to_string());
                             }
                         }
                         if lname.as_slice() == b"author"
@@ -693,7 +761,16 @@ pub fn build_cbeta_index(root: &Path) -> Vec<IndexEntry> {
                         let name_owned = e.name().as_ref().to_owned();
                         let lname = local_name(&name_owned);
                         if lname == b"title" && in_title_header {
+                            let t = title_buf.split_whitespace().collect::<Vec<_>>().join(" ");
+                            if !t.is_empty() {
+                                titles.push(HeaderTitleCandidate {
+                                    text: t,
+                                    lang: title_lang.take(),
+                                });
+                            }
                             in_title_header = false;
+                            title_buf.clear();
+                            title_lang = None;
                         }
                         if lname == b"author" && in_author {
                             in_author = false;
@@ -744,8 +821,8 @@ pub fn build_cbeta_index(root: &Path) -> Vec<IndexEntry> {
                     Ok(Event::Text(t)) => {
                         let tx = t.decode().unwrap_or_default();
                         let s = tx.to_string();
-                        if in_title_header && title_header.is_none() && !s.trim().is_empty() {
-                            title_header = Some(s.clone());
+                        if in_title_header {
+                            title_buf.push_str(&s);
                         }
                         if in_author && author.is_none() && !s.trim().is_empty() {
                             author = Some(s.clone());
@@ -784,7 +861,7 @@ pub fn build_cbeta_index(root: &Path) -> Vec<IndexEntry> {
             }
 
             let id = id.unwrap_or_else(|| stem_from(p));
-            let title = title_header
+            let title = pick_best_cbeta_header_title(&titles)
                 .or_else(|| heads.get(0).cloned())
                 .unwrap_or_else(|| stem_from(p));
             let abs = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
@@ -813,6 +890,7 @@ pub fn build_cbeta_index(root: &Path) -> Vec<IndexEntry> {
             }
 
             let mut meta = BTreeMap::new();
+            meta.insert("indexVersion".to_string(), "cbeta_index_v2".to_string());
             if !canon.is_empty() {
                 meta.insert("canon".to_string(), canon);
             }
@@ -1447,6 +1525,349 @@ fn parse_gaiji_map(xml: &str) -> HashMap<String, String> {
     map
 }
 
+/// Fast CBETA gaiji map extraction: parse only `<charDecl>` and exit early.
+///
+/// This is important for `format=plain` snippet extraction, where we want to
+/// resolve `<g ref="#CBxxxx">` even when the snippet itself doesn't include
+/// `<charDecl>`.
+pub fn cbeta_gaiji_map_fast(xml: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text_start = true;
+    reader.config_mut().trim_text_end = true;
+    let mut buf = Vec::new();
+    let mut in_chardecl = false;
+    let mut in_char = false;
+    let mut current_id: Option<String> = None;
+    let mut current_mapping_type: Option<String> = None;
+    let mut current_val: Option<String> = None;
+    let mut in_charname = false;
+    let mut in_mapping = false;
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let name_owned = e.name().as_ref().to_owned();
+                let name = local_name(&name_owned);
+                if name == b"charDecl" {
+                    in_chardecl = true;
+                } else if in_chardecl && name == b"char" {
+                    in_char = true;
+                    current_id = attr_val(&e, b"xml:id").map(|v| v.to_string());
+                    current_val = None;
+                    current_mapping_type = None;
+                } else if in_char && name == b"mapping" {
+                    current_mapping_type = attr_val(&e, b"type").map(|v| v.to_string());
+                    in_mapping = true;
+                } else if in_char && name == b"charName" {
+                    in_charname = true;
+                }
+            }
+            Ok(Event::Empty(e)) => {
+                let name_owned = e.name().as_ref().to_owned();
+                let name = local_name(&name_owned);
+                if name == b"charDecl" {
+                    // unlikely, but treat as done
+                    break;
+                } else if in_chardecl && name == b"char" {
+                    // empty char: ignore
+                } else if in_char && name == b"mapping" {
+                    // empty mapping: ignore
+                }
+            }
+            Ok(Event::End(e)) => {
+                let name_owned = e.name().as_ref().to_owned();
+                let name = local_name(&name_owned);
+                if name == b"charDecl" {
+                    break;
+                }
+                if name == b"mapping" {
+                    in_mapping = false;
+                }
+                if name == b"charName" {
+                    in_charname = false;
+                }
+                if name == b"char" && in_char {
+                    if let (Some(id), Some(v)) = (current_id.clone(), current_val.clone()) {
+                        if !v.is_empty() {
+                            map.insert(id, v);
+                        }
+                    }
+                    in_char = false;
+                    current_id = None;
+                    current_val = None;
+                    current_mapping_type = None;
+                }
+            }
+            Ok(Event::Text(t)) => {
+                let text = t.decode().unwrap_or_default().into_owned();
+                if in_char && in_mapping && current_mapping_type.as_deref() == Some("unicode") {
+                    if !text.trim().is_empty() {
+                        current_val = Some(text);
+                    }
+                } else if in_char && in_mapping && current_mapping_type.as_deref() == Some("normal")
+                {
+                    if current_val.is_none() && !text.trim().is_empty() {
+                        current_val = Some(text);
+                    }
+                } else if in_char && in_charname {
+                    if current_val.is_none() && !text.trim().is_empty() {
+                        current_val = Some(text);
+                    }
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    map
+}
+
+fn squash_newlines_max(s: &str, max_consecutive: usize) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut run = 0usize;
+    for ch in s.chars() {
+        if ch == '\n' {
+            run += 1;
+            if run <= max_consecutive {
+                out.push('\n');
+            }
+        } else {
+            run = 0;
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn normalize_plain_lines(s: &str) -> String {
+    let s = s.replace("\r", "");
+    let mut lines: Vec<String> = Vec::new();
+    for line in s.lines() {
+        let t = line.trim();
+        if t.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+        let mut collapsed = String::with_capacity(t.len());
+        let mut in_ws = false;
+        for ch in t.chars() {
+            if ch.is_whitespace() {
+                if !in_ws {
+                    collapsed.push(' ');
+                    in_ws = true;
+                }
+            } else {
+                in_ws = false;
+                collapsed.push(ch);
+            }
+        }
+        lines.push(collapsed);
+    }
+    let joined = lines.join("\n");
+    let squashed = squash_newlines_max(&joined, 2);
+    squashed.trim_matches('\n').to_string()
+}
+
+fn extract_cbeta_plain_impl(
+    xml: &str,
+    gaiji: Option<&HashMap<String, String>>,
+    include_notes: bool,
+    skip_tei_header: bool,
+) -> String {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text_start = true;
+    reader.config_mut().trim_text_end = true;
+    let mut buf = Vec::new();
+    let mut out = String::new();
+
+    // Exclude <teiHeader> content (metadata) by tracking XML element depth.
+    let mut skip_header_depth: usize = 0;
+    // Exclude notes when include_notes=false (depth-based subtree skip).
+    let mut skip_note_depth: usize = 0;
+    // Collect note text when include_notes=true.
+    let mut collect_note: bool = false;
+    let mut note_depth: usize = 0;
+    let mut note_buf = String::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let name_owned = e.name().as_ref().to_owned();
+                let name = local_name(&name_owned);
+
+                if skip_header_depth > 0 {
+                    // Inside teiHeader; just track depth.
+                    skip_header_depth += 1;
+                    continue;
+                }
+                if skip_tei_header && name == b"teiHeader" {
+                    skip_header_depth = 1;
+                    continue;
+                }
+
+                if collect_note {
+                    note_depth += 1;
+                    if name == b"g" {
+                        if let Some(r) = attr_val(&e, b"ref") {
+                            let key = r.trim_start_matches('#').to_string();
+                            if let Some(v) = gaiji.and_then(|m| m.get(&key)) {
+                                note_buf.push_str(v);
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                if skip_note_depth > 0 {
+                    skip_note_depth += 1;
+                    continue;
+                }
+
+                if name == b"note" {
+                    if include_notes {
+                        collect_note = true;
+                        note_depth = 1;
+                        note_buf.clear();
+                    } else {
+                        skip_note_depth = 1;
+                    }
+                    continue;
+                }
+
+                if name == b"lb" {
+                    out.push('\n');
+                } else if name == b"pb" {
+                    out.push('\n');
+                    out.push('\n');
+                } else if name == b"g" {
+                    if let Some(r) = attr_val(&e, b"ref") {
+                        let key = r.trim_start_matches('#').to_string();
+                        if let Some(v) = gaiji.and_then(|m| m.get(&key)) {
+                            out.push_str(v);
+                        }
+                    }
+                }
+            }
+            Ok(Event::Empty(e)) => {
+                let name_owned = e.name().as_ref().to_owned();
+                let name = local_name(&name_owned);
+
+                if skip_header_depth > 0 {
+                    continue;
+                }
+                if skip_tei_header && name == b"teiHeader" {
+                    continue;
+                }
+
+                if collect_note {
+                    if name == b"g" {
+                        if let Some(r) = attr_val(&e, b"ref") {
+                            let key = r.trim_start_matches('#').to_string();
+                            if let Some(v) = gaiji.and_then(|m| m.get(&key)) {
+                                note_buf.push_str(v);
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                if skip_note_depth > 0 {
+                    continue;
+                }
+
+                if name == b"lb" {
+                    out.push('\n');
+                } else if name == b"pb" {
+                    out.push('\n');
+                    out.push('\n');
+                } else if name == b"g" {
+                    if let Some(r) = attr_val(&e, b"ref") {
+                        let key = r.trim_start_matches('#').to_string();
+                        if let Some(v) = gaiji.and_then(|m| m.get(&key)) {
+                            out.push_str(v);
+                        }
+                    }
+                } else if name == b"note" {
+                    // empty note: ignore
+                }
+            }
+            Ok(Event::End(e)) => {
+                let name_owned = e.name().as_ref().to_owned();
+                let name = local_name(&name_owned);
+
+                if skip_header_depth > 0 {
+                    skip_header_depth = skip_header_depth.saturating_sub(1);
+                    continue;
+                }
+
+                if collect_note {
+                    note_depth = note_depth.saturating_sub(1);
+                    if name == b"note" && note_depth == 0 {
+                        let t = note_buf.split_whitespace().collect::<Vec<_>>().join(" ");
+                        if !t.is_empty() {
+                            out.push_str(" [注] ");
+                            out.push_str(&t);
+                        }
+                        collect_note = false;
+                        note_buf.clear();
+                    }
+                    continue;
+                }
+
+                if skip_note_depth > 0 {
+                    skip_note_depth = skip_note_depth.saturating_sub(1);
+                    continue;
+                }
+            }
+            Ok(Event::Text(t)) => {
+                if skip_header_depth > 0 {
+                    // ignore
+                } else if collect_note {
+                    note_buf.push_str(&t.decode().unwrap_or_default());
+                } else if skip_note_depth == 0 {
+                    out.push_str(&t.decode().unwrap_or_default());
+                }
+            }
+            Ok(Event::CData(t)) => {
+                if skip_header_depth > 0 {
+                    // ignore
+                } else if collect_note {
+                    note_buf.push_str(&String::from_utf8_lossy(&t));
+                } else if skip_note_depth == 0 {
+                    out.push_str(&String::from_utf8_lossy(&t));
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    normalize_plain_lines(&out)
+}
+
+/// Extract CBETA plain text from a full TEI XML document.
+/// - resolves gaiji using `<charDecl>`
+/// - excludes `<teiHeader>`
+/// - preserves line breaks (`lb` -> `\n`, `pb` -> blank line)
+pub fn extract_cbeta_plain_from_xml(xml: &str, include_notes: bool) -> String {
+    let gaiji = cbeta_gaiji_map_fast(xml);
+    extract_cbeta_plain_impl(xml, Some(&gaiji), include_notes, true)
+}
+
+/// Extract CBETA plain text from an XML snippet, using a gaiji map precomputed
+/// from the full document.
+pub fn extract_cbeta_plain_from_snippet(
+    snippet_xml: &str,
+    gaiji: &HashMap<String, String>,
+    include_notes: bool,
+) -> String {
+    extract_cbeta_plain_impl(snippet_xml, Some(gaiji), include_notes, true)
+}
+
 pub fn extract_text_opts(xml: &str, include_notes: bool) -> String {
     let gaiji = parse_gaiji_map(xml);
     let mut reader = Reader::from_str(xml);
@@ -1643,6 +2064,162 @@ pub fn extract_cbeta_juan(xml: &str, part: &str) -> Option<String> {
     }
 }
 
+/// Extract a single CBETA juan as plain text with line breaks preserved.
+/// This respects `include_notes` and resolves gaiji using `<charDecl>` from the full document.
+pub fn extract_cbeta_juan_plain(xml: &str, part: &str, include_notes: bool) -> Option<String> {
+    let gaiji = cbeta_gaiji_map_fast(xml);
+    let target_n1 = part.to_string();
+    let target_n2 = format!("{:0>3}", part);
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text_start = true;
+    reader.config_mut().trim_text_end = true;
+    let mut buf = Vec::new();
+    let mut capturing = false;
+    let mut out = String::new();
+
+    let mut skip_note_depth: usize = 0;
+    let mut collect_note: bool = false;
+    let mut note_depth: usize = 0;
+    let mut note_buf = String::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let name_owned = e.name().as_ref().to_owned();
+                let name = local_name(&name_owned);
+                if name == b"juan" {
+                    let fun = attr_val(&e, b"fun").map(|v| v.to_ascii_lowercase());
+                    let n = attr_val(&e, b"n").unwrap_or(Cow::Borrowed(""));
+                    if !capturing {
+                        if (n == target_n1 || n == target_n2)
+                            && (fun.as_deref() == Some("open") || fun.is_none())
+                        {
+                            capturing = true;
+                        }
+                    } else if fun.as_deref() == Some("close") {
+                        break;
+                    }
+                } else if capturing {
+                    if collect_note {
+                        note_depth += 1;
+                        if name == b"g" {
+                            if let Some(r) = attr_val(&e, b"ref") {
+                                let key = r.trim_start_matches('#').to_string();
+                                if let Some(v) = gaiji.get(&key) {
+                                    note_buf.push_str(v);
+                                }
+                            }
+                        }
+                    } else if skip_note_depth > 0 {
+                        skip_note_depth += 1;
+                    } else if name == b"note" {
+                        if include_notes {
+                            collect_note = true;
+                            note_depth = 1;
+                            note_buf.clear();
+                        } else {
+                            skip_note_depth = 1;
+                        }
+                    } else if name == b"lb" {
+                        out.push('\n');
+                    } else if name == b"pb" {
+                        out.push('\n');
+                        out.push('\n');
+                    } else if name == b"g" {
+                        if let Some(r) = attr_val(&e, b"ref") {
+                            let key = r.trim_start_matches('#').to_string();
+                            if let Some(v) = gaiji.get(&key) {
+                                out.push_str(v);
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(Event::Empty(e)) => {
+                if !capturing {
+                    // ignore
+                } else {
+                    let name_owned = e.name().as_ref().to_owned();
+                    let name = local_name(&name_owned);
+                    if collect_note {
+                        if name == b"g" {
+                            if let Some(r) = attr_val(&e, b"ref") {
+                                let key = r.trim_start_matches('#').to_string();
+                                if let Some(v) = gaiji.get(&key) {
+                                    note_buf.push_str(v);
+                                }
+                            }
+                        }
+                    } else if skip_note_depth == 0 {
+                        if name == b"lb" {
+                            out.push('\n');
+                        } else if name == b"pb" {
+                            out.push('\n');
+                            out.push('\n');
+                        } else if name == b"g" {
+                            if let Some(r) = attr_val(&e, b"ref") {
+                                let key = r.trim_start_matches('#').to_string();
+                                if let Some(v) = gaiji.get(&key) {
+                                    out.push_str(v);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(Event::End(e)) => {
+                if capturing {
+                    let name_owned = e.name().as_ref().to_owned();
+                    let name = local_name(&name_owned);
+                    if collect_note {
+                        note_depth = note_depth.saturating_sub(1);
+                        if name == b"note" && note_depth == 0 {
+                            let t = note_buf.split_whitespace().collect::<Vec<_>>().join(" ");
+                            if !t.is_empty() {
+                                out.push_str(" [注] ");
+                                out.push_str(&t);
+                            }
+                            collect_note = false;
+                            note_buf.clear();
+                        }
+                    } else if skip_note_depth > 0 {
+                        skip_note_depth = skip_note_depth.saturating_sub(1);
+                    }
+                }
+            }
+            Ok(Event::Text(t)) => {
+                if capturing {
+                    let text = t.decode().unwrap_or_default().into_owned();
+                    if collect_note {
+                        note_buf.push_str(&text);
+                    } else if skip_note_depth == 0 {
+                        out.push_str(&text);
+                    }
+                }
+            }
+            Ok(Event::CData(t)) => {
+                if capturing {
+                    let text = String::from_utf8_lossy(&t).into_owned();
+                    if collect_note {
+                        note_buf.push_str(&text);
+                    } else if skip_note_depth == 0 {
+                        out.push_str(&text);
+                    }
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    if out.trim().is_empty() {
+        None
+    } else {
+        Some(normalize_plain_lines(&out))
+    }
+}
+
 pub fn list_heads_cbeta(xml: &str) -> Vec<String> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text_start = true;
@@ -1783,93 +2360,6 @@ pub struct FetchHints {
     pub structure_info: Vec<String>,
 }
 
-fn search_index(entries: &[IndexEntry], q: &str, limit: usize) -> Vec<IndexEntry> {
-    // best_match関数を使って検索し、IndexEntryのベクトルとして返す
-    use unicode_normalization::UnicodeNormalization;
-
-    let normalized = |s: &str| -> String {
-        s.nfc()
-            .collect::<String>()
-            .to_lowercase()
-            .chars()
-            .filter(|c| !c.is_whitespace() && !c.is_ascii_punctuation())
-            .collect()
-    };
-
-    let jaccard = |a: &str, b: &str| -> f32 {
-        let sa: std::collections::HashSet<_> = a.chars().collect();
-        let sb: std::collections::HashSet<_> = b.chars().collect();
-        if sa.is_empty() || sb.is_empty() {
-            return 0.0;
-        }
-        let inter = sa.intersection(&sb).count() as f32;
-        let uni = (sa.len() + sb.len()).saturating_sub(inter as usize) as f32;
-        if uni == 0.0 {
-            0.0
-        } else {
-            inter / uni
-        }
-    };
-
-    let tokenset = |s: &str| -> std::collections::HashSet<String> {
-        s.split_whitespace()
-            .map(|w| normalized(w))
-            .filter(|w| !w.is_empty())
-            .collect()
-    };
-
-    let token_jaccard = |a: &str, b: &str| -> f32 {
-        let sa: std::collections::HashSet<_> = tokenset(a);
-        let sb: std::collections::HashSet<_> = tokenset(b);
-        if sa.is_empty() || sb.is_empty() {
-            return 0.0;
-        }
-        let inter = sa.intersection(&sb).count() as f32;
-        let uni = (sa.len() + sb.len()).saturating_sub(inter as usize) as f32;
-        if uni == 0.0 {
-            0.0
-        } else {
-            inter / uni
-        }
-    };
-
-    let nq = normalized(q);
-    let mut scored: Vec<(f32, &IndexEntry)> = entries
-        .iter()
-        .map(|e| {
-            let meta_str = e
-                .meta
-                .as_ref()
-                .map(|m| m.values().cloned().collect::<Vec<_>>().join(" "))
-                .unwrap_or_default();
-            let hay_all = format!("{} {} {}", e.title, e.id, meta_str);
-            let hay = normalized(&hay_all);
-            let mut score = if hay.contains(&nq) {
-                1.0f32
-            } else {
-                let s_char = jaccard(&hay, &nq);
-                let s_tok = token_jaccard(&hay_all, q);
-                s_char.max(s_tok)
-            };
-
-            // ID完全一致ボーナス
-            if e.id.to_lowercase() == q.to_lowercase() {
-                score = 1.1;
-            }
-
-            (score, e)
-        })
-        .collect();
-
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
-    scored
-        .into_iter()
-        .take(limit)
-        .filter(|(s, _)| *s > 0.1) // 最低スコア閾値
-        .map(|(_, e)| e.clone())
-        .collect()
-}
-
 pub fn cbeta_grep(
     root: &Path,
     query: &str,
@@ -1893,36 +2383,20 @@ pub fn cbeta_grep(
         all_results.extend(other_results);
     }
 
-    // 3. タイトル検索を実行して、マッチしたものがあれば上位に移動
-    let index = build_cbeta_index(root);
-    let title_results = search_index(&index, query, max_results);
-
-    if !title_results.is_empty() {
-        // タイトル検索結果をIDの集合に変換
-        let title_ids: std::collections::HashSet<_> = title_results.iter().map(|t| &t.id).collect();
-
-        // grep結果をタイトルマッチ優先でソート
-        all_results.sort_by(|a, b| {
-            let a_in_title = title_ids.contains(&a.file_id);
-            let b_in_title = title_ids.contains(&b.file_id);
-
-            match (a_in_title, b_in_title) {
-                (true, false) => std::cmp::Ordering::Less, // aがタイトルマッチ → 先に
-                (false, true) => std::cmp::Ordering::Greater, // bがタイトルマッチ → 先に
-                _ => {
-                    // 両方タイトルマッチまたは両方非マッチの場合、T系列優先
-                    let a_is_t = a.file_id.starts_with('T');
-                    let b_is_t = b.file_id.starts_with('T');
-
-                    match (a_is_t, b_is_t) {
-                        (true, false) => std::cmp::Ordering::Less,
-                        (false, true) => std::cmp::Ordering::Greater,
-                        _ => a.file_id.cmp(&b.file_id),
-                    }
-                }
-            }
-        });
-    }
+    // NOTE: Avoid building full CBETA index here; it is extremely expensive and
+    // dominated cbeta_search latency. Keep ordering deterministic and cheap.
+    all_results.sort_by(|a, b| {
+        let a_is_t = a.file_id.starts_with('T');
+        let b_is_t = b.file_id.starts_with('T');
+        match (a_is_t, b_is_t) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => match b.total_matches.cmp(&a.total_matches) {
+                std::cmp::Ordering::Equal => a.file_id.cmp(&b.file_id),
+                other => other,
+            },
+        }
+    });
 
     all_results.truncate(max_results);
     all_results
@@ -2433,5 +2907,90 @@ mod tests_gretil {
         let results = gretil_grep(dir.path(), "kṛṣṇa", 10, 3);
         assert_eq!(results.len(), 1);
         assert!(results[0].matches.len() >= 1);
+    }
+}
+
+#[cfg(test)]
+mod tests_cbeta_index_and_plain {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn build_cbeta_index_prefers_cjk_title_over_collection_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("T0001.xml");
+        let xml = r#"
+<TEI xml:id="T0001">
+  <teiHeader>
+    <fileDesc>
+      <titleStmt>
+        <title xml:lang="en">Taishō Tripiṭaka</title>
+        <title xml:lang="zh">妙法蓮華經</title>
+      </titleStmt>
+    </fileDesc>
+  </teiHeader>
+  <text><body><p>須彌山</p></body></text>
+</TEI>
+"#;
+        fs::write(&p, xml).unwrap();
+        let idx = build_cbeta_index(dir.path());
+        assert_eq!(idx.len(), 1);
+        assert_eq!(idx[0].id, "T0001");
+        assert_eq!(idx[0].title, "妙法蓮華經");
+        let ver = idx[0]
+            .meta
+            .as_ref()
+            .and_then(|m| m.get("indexVersion"))
+            .map(|s| s.as_str());
+        assert_eq!(ver, Some("cbeta_index_v2"));
+    }
+
+    #[test]
+    fn extract_cbeta_plain_skips_header_resolves_gaiji_and_preserves_breaks() {
+        let xml = r##"
+<TEI>
+  <teiHeader>
+    <encodingDesc>
+      <charDecl>
+        <char xml:id="CB00416">
+          <mapping type="unicode">佛</mapping>
+        </char>
+      </charDecl>
+    </encodingDesc>
+    <fileDesc><titleStmt><title>HEADER TITLE</title></titleStmt></fileDesc>
+  </teiHeader>
+  <text><body>
+    <p>甲<lb n="0001a01"/>乙<g ref="#CB00416"/>丙<pb n="0001a02"/>丁<note>注釈</note></p>
+  </body></text>
+</TEI>
+"##;
+
+        let out = extract_cbeta_plain_from_xml(xml, false);
+        assert!(!out.contains("HEADER TITLE"));
+        assert!(!out.contains("注釈"));
+        assert!(out.contains("甲\n乙佛丙\n\n丁"));
+
+        let out2 = extract_cbeta_plain_from_xml(xml, true);
+        assert!(out2.contains("[注] 注釈"));
+    }
+
+    #[test]
+    fn extract_cbeta_plain_from_snippet_resolves_gaiji() {
+        let xml = r#"
+<TEI>
+  <teiHeader>
+    <encodingDesc>
+      <charDecl>
+        <char xml:id="CB00416"><mapping type="unicode">佛</mapping></char>
+      </charDecl>
+    </encodingDesc>
+  </teiHeader>
+  <text><body><p>dummy</p></body></text>
+</TEI>
+"#;
+        let gaiji = cbeta_gaiji_map_fast(xml);
+        let snippet = r##"<p>乙<g ref="#CB00416"/>丙</p>"##;
+        let out = extract_cbeta_plain_from_snippet(snippet, &gaiji, false);
+        assert_eq!(out, "乙佛丙");
     }
 }

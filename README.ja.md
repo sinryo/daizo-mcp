@@ -106,6 +106,9 @@ daizo-cli update --yes              # CLI の再インストール
 
 ## MCP ツール
 
+解決:
+- `daizo_resolve`（タイトル/別名/ID からコーパス候補と、次に呼ぶべき取得ツール呼び出しを返す）
+
 検索:
 - `cbeta_title_search`, `cbeta_search`
 - `tipitaka_title_search`, `tipitaka_search`
@@ -113,10 +116,10 @@ daizo-cli update --yes              # CLI の再インストール
 - `sat_search`
 
 取得:
-- `cbeta_fetch`（`lineNumber`, `contextBefore`, `contextAfter` をサポート）
+- `cbeta_fetch`（`lb`, `lineNumber`, `contextBefore`, `contextAfter`, `headQuery`, `headIndex`, `format:"plain"` をサポート。`plain` は XMLタグ除去・gaiji解決・teiHeader除外・改行保持）
 - `tipitaka_fetch`（`lineNumber`, `contextBefore`, `contextAfter` をサポート）
-- `gretil_fetch`（`lineNumber`, `contextBefore`, `contextAfter` をサポート）
-- `sat_fetch`, `sat_pipeline`
+- `gretil_fetch`（`lineNumber`, `contextBefore`, `contextAfter`, `headQuery`, `headIndex` をサポート）
+- `sat_fetch`, `sat_pipeline`（`exact` をサポート。デフォルトはフレーズ検索）
 
 ## 低トークン運用（AI クライアント向け）
 
@@ -153,9 +156,10 @@ daizo-cli update --yes              # CLI の再インストール
 
 ### 通常フロー（IDが不明な場合）
 
-1. `*_search` → `_meta.fetchSuggestions` を読む
-2. `*_fetch` を `{ id, lineNumber, contextBefore:1, contextAfter:3 }` で呼ぶ
-3. `*_pipeline` は多ファイル要約が必要な時のみ使用。既定で `autoFetch=false` を推奨
+1. `daizo_resolve` で候補ID（コーパス）を決める
+2. `*_fetch` を `{ id }`（必要なら `part` や `headQuery` など）で呼ぶ
+3. フレーズ検索が必要なら `*_search` → `_meta.fetchSuggestions` → `*_fetch`（`lineNumber`）を使う
+4. `*_pipeline` は多ファイル要約が必要な時のみ使用。既定で `autoFetch=false` を推奨
 
 各ツールの description にも案内を記載。`initialize` 応答の `prompts.low-token-guide` でも方針を提示します。
 

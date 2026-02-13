@@ -8,10 +8,12 @@ use unicode_normalization::UnicodeNormalization;
 pub fn normalized(s: &str) -> String {
     let mut t: String = s.nfkd().collect::<String>().to_lowercase();
     // Map common simplified/variant forms to traditional used frequently in corpora
-    let map: [(&str, &str); 12] = [
+    let map: [(&str, &str); 27] = [
         ("経", "經"),
         ("经", "經"),
+        ("観", "觀"),
         ("观", "觀"),
+        ("仏", "佛"),
         ("圣", "聖"),
         ("会", "會"),
         ("后", "後"),
@@ -21,11 +23,86 @@ pub fn normalized(s: &str) -> String {
         ("龙", "龍"),
         ("台", "臺"),
         ("体", "體"),
+        ("訳", "譯"),
+        ("译", "譯"),
+        ("蔵", "藏"),
+        ("禅", "禪"),
+        ("浄", "淨"),
+        ("净", "淨"),
+        ("証", "證"),
+        ("证", "證"),
+        ("覚", "覺"),
+        ("觉", "覺"),
+        // Common Buddhist variants
+        ("弥", "彌"),
+        ("倶", "俱"),
+        ("舎", "舍"),
     ];
     for (a, b) in map.iter() {
         t = t.replace(a, b);
     }
     t.chars().filter(|c| c.is_alphanumeric()).collect()
+}
+
+fn cjk_variant_group(ch: char) -> Option<&'static str> {
+    // Minimal CJK variant groups useful for Buddhist corpora.
+    // Use in regex character classes to match both forms.
+    match ch {
+        '経' | '經' | '经' => Some("經経经"),
+        '観' | '觀' | '观' => Some("觀観观"),
+        '仏' | '佛' => Some("佛仏"),
+        '訳' | '譯' | '译' => Some("譯訳译"),
+        '蔵' | '藏' => Some("藏蔵"),
+        '禅' | '禪' => Some("禪禅"),
+        '浄' | '淨' | '净' => Some("淨浄净"),
+        '証' | '證' | '证' => Some("證証证"),
+        '覚' | '覺' | '觉' => Some("覺覚觉"),
+        '圣' | '聖' => Some("聖圣"),
+        '会' | '會' => Some("會会"),
+        '后' | '後' => Some("後后"),
+        '国' | '國' => Some("國国"),
+        '灵' | '靈' => Some("靈灵"),
+        '广' | '廣' => Some("廣广"),
+        '龙' | '龍' => Some("龍龙"),
+        '台' | '臺' => Some("臺台"),
+        '体' | '體' => Some("體体"),
+        // Common Buddhist variants
+        '弥' | '彌' => Some("彌弥"),
+        '倶' | '俱' => Some("俱倶"),
+        '舎' | '舍' => Some("舍舎"),
+        _ => None,
+    }
+}
+
+/// Collapse consecutive whitespace into `\\s*` and expand known CJK variants into
+/// regex character classes. Intended for building safe regex patterns from a
+/// literal user query (non-regex input).
+pub fn ws_cjk_variant_fuzzy_regex_literal(s: &str) -> String {
+    let mut out = String::new();
+    let mut in_ws = false;
+    for ch in s.chars() {
+        if ch.is_whitespace() {
+            if !in_ws {
+                out.push_str("\\s*");
+                in_ws = true;
+            }
+            continue;
+        }
+        in_ws = false;
+        if let Some(vs) = cjk_variant_group(ch) {
+            out.push('[');
+            for vch in vs.chars() {
+                if vch == '\\' || vch == ']' || vch == '-' {
+                    out.push('\\');
+                }
+                out.push(vch);
+            }
+            out.push(']');
+        } else {
+            out.push_str(&regex::escape(&ch.to_string()));
+        }
+    }
+    out
 }
 
 /// Normalize while preserving token boundaries (non-alnum -> space, then squash)
@@ -378,6 +455,23 @@ mod tests {
         let a = normalized("经"); // simplified
         let b = normalized("經"); // traditional
         assert_eq!(a, b);
+        assert_eq!(normalized("観"), normalized("觀"));
+        assert_eq!(normalized("弥"), normalized("彌"));
+        assert_eq!(normalized("仏"), normalized("佛"));
+        assert_eq!(normalized("訳"), normalized("譯"));
+        assert_eq!(normalized("蔵"), normalized("藏"));
+        assert_eq!(normalized("禅"), normalized("禪"));
+        assert_eq!(normalized("浄"), normalized("淨"));
+        assert_eq!(normalized("証"), normalized("證"));
+        assert_eq!(normalized("覚"), normalized("覺"));
+    }
+
+    #[test]
+    fn ws_cjk_variant_fuzzy_regex_literal_matches() {
+        let pat = ws_cjk_variant_fuzzy_regex_literal("須弥山");
+        let re = regex::Regex::new(&pat).unwrap();
+        assert!(re.is_match("須彌山"));
+        assert!(re.is_match("須弥山"));
     }
 
     #[test]

@@ -1,4 +1,3 @@
-use crate::regex_utils::ws_fuzzy_regex;
 use crate::{
     decode_xml_bytes, load_or_build_cbeta_index_cli, resolve_cbeta_path_cli, slice_text_cli,
     SliceArgs,
@@ -113,13 +112,12 @@ pub fn cbeta_fetch(args: &crate::Commands) -> anyhow::Result<()> {
         if let Some(hpat0) = highlight.as_deref() {
             let looks_like_regex = hpat0.chars().any(|c| ".+*?[](){}|\\".contains(c));
             let mut hl_is_regex = *highlight_regex;
-            let hpat =
-                if hpat0.chars().any(|c| c.is_whitespace()) && !looks_like_regex && !hl_is_regex {
-                    hl_is_regex = true;
-                    ws_fuzzy_regex(hpat0)
-                } else {
-                    hpat0.to_string()
-                };
+            let hpat = if !hl_is_regex && !looks_like_regex {
+                hl_is_regex = true;
+                daizo_core::text_utils::ws_cjk_variant_fuzzy_regex_literal(hpat0)
+            } else {
+                hpat0.to_string()
+            };
             let hpre = highlight_prefix.as_deref().unwrap_or(">>> ");
             let hsuf = highlight_suffix.as_deref().unwrap_or(" <<<");
             let (decorated, count, positions) =
@@ -201,10 +199,10 @@ pub fn cbeta_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
     {
         let root = cbeta_root();
         let looks_like_regex = query.chars().any(|c| ".+*?[](){}|\\".contains(c));
-        let q = if query.chars().any(|c| c.is_whitespace()) && !looks_like_regex {
-            ws_fuzzy_regex(&query)
-        } else {
+        let q = if looks_like_regex {
             query.clone()
+        } else {
+            daizo_core::text_utils::ws_cjk_variant_fuzzy_regex_literal(&query)
         };
         let results = cbeta_grep(&root, &q, *max_results, *max_matches_per_file);
         let mut summary = format!(
@@ -303,12 +301,11 @@ pub fn cbeta_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
                                     let looks_like =
                                         pat0.chars().any(|c| ".+*?[](){}|\\".contains(c));
                                     let mut hlr = *highlight_regex;
-                                    let pat = if pat0.chars().any(|c| c.is_whitespace())
-                                        && !looks_like
-                                        && !hlr
-                                    {
+                                    let pat = if !hlr && !looks_like {
                                         hlr = true;
-                                        ws_fuzzy_regex(pat0)
+                                        daizo_core::text_utils::ws_cjk_variant_fuzzy_regex_literal(
+                                            pat0,
+                                        )
                                     } else {
                                         pat0.to_string()
                                     };
@@ -393,13 +390,12 @@ pub fn cbeta_pipeline(args: &crate::Commands) -> anyhow::Result<()> {
                         if let Some(pat0) = highlight.as_deref() {
                             let looks_like = pat0.chars().any(|c| ".+*?[](){}|\\".contains(c));
                             let mut hlr = *highlight_regex;
-                            let pat =
-                                if pat0.chars().any(|c| c.is_whitespace()) && !looks_like && !hlr {
-                                    hlr = true;
-                                    ws_fuzzy_regex(pat0)
-                                } else {
-                                    pat0.to_string()
-                                };
+                            let pat = if !hlr && !looks_like {
+                                hlr = true;
+                                daizo_core::text_utils::ws_cjk_variant_fuzzy_regex_literal(pat0)
+                            } else {
+                                pat0.to_string()
+                            };
                             if hlr {
                                 if let Ok(re) = regex::Regex::new(&pat) {
                                     for mm in re.find_iter(&ctx) {
@@ -458,10 +454,10 @@ pub fn cbeta_search(
     json: bool,
 ) -> anyhow::Result<()> {
     let looks_like_regex = query.chars().any(|c| ".+*?[](){}|\\".contains(c));
-    let q = if query.chars().any(|c| c.is_whitespace()) && !looks_like_regex {
-        ws_fuzzy_regex(query)
-    } else {
+    let q = if looks_like_regex {
         query.to_string()
+    } else {
+        daizo_core::text_utils::ws_cjk_variant_fuzzy_regex_literal(query)
     };
     let results = cbeta_grep(&cbeta_root(), &q, max_results, max_matches_per_file);
     if json {

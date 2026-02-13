@@ -106,6 +106,9 @@ daizo-cli update --yes              # reinstall this CLI
 
 ## MCP Tools
 
+Resolve:
+- `daizo_resolve` (resolve title/alias/ID into candidate corpus IDs and recommended next fetch calls)
+
 Search:
 - `cbeta_title_search`, `cbeta_search`
 - `tipitaka_title_search`, `tipitaka_search`
@@ -113,10 +116,10 @@ Search:
 - `sat_search`
 
 Fetch:
-- `cbeta_fetch` (supports `lineNumber`, `contextBefore`, `contextAfter`)
+- `cbeta_fetch` (supports `lb`, `lineNumber`, `contextBefore`, `contextAfter`, `headQuery`, `headIndex`, `format:"plain"`; `plain` strips XML, resolves gaiji, excludes `teiHeader`, preserves line breaks)
 - `tipitaka_fetch` (supports `lineNumber`, `contextBefore`, `contextAfter`)
-- `gretil_fetch` (supports `lineNumber`, `contextBefore`, `contextAfter`)
-- `sat_fetch`, `sat_pipeline`
+- `gretil_fetch` (supports `lineNumber`, `contextBefore`, `contextAfter`, `headQuery`, `headIndex`)
+- `sat_fetch`, `sat_pipeline` (supports `exact`; default is phrase search)
 
 ## Low-Token Guide (AI clients)
 
@@ -153,9 +156,10 @@ When the text ID is known, **skip search entirely**:
 
 ### Standard Flow (when ID unknown)
 
-1. Use `*_search` → read `_meta.fetchSuggestions`
-2. Call `*_fetch` with `{ id, lineNumber, contextBefore:1, contextAfter:3 }`
-3. Use `*_pipeline` only when you need a multi-file summary; set `autoFetch=false` by default
+1. Use `daizo_resolve` to pick corpus+id candidates
+2. Call `*_fetch` with `{ id }` (and optionally `part`/`headQuery`, etc.)
+3. If you need phrase search: `*_search` → read `_meta.fetchSuggestions` → `*_fetch` (`lineNumber`)
+4. Use `*_pipeline` only when you need a multi-file summary; set `autoFetch=false` by default
 
 Tool descriptions mention these hints; `initialize` also exposes a `prompts.low-token-guide` entry for clients.
 
