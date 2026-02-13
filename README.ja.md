@@ -1,6 +1,6 @@
 # daizo-mcp
 
-CBETA（漢文）、パーリ三蔵（ローマ字）、GRETIL（サンスクリット TEI）、SAT（オンライン）に対応した、高速な仏教テキスト検索・取得のための MCP サーバーおよび CLI です。Rust で実装し、高速・堅牢に動作します。
+CBETA（漢文）、パーリ三蔵（ローマ字）、GRETIL（サンスクリット TEI）、SAT（オンライン）に加え、チベット大蔵経系のオンライン全文検索（BUDA/BDRC・Adarshah）にも対応した、高速な仏教テキスト検索・取得のための MCP サーバーおよび CLI です。Rust で実装し、高速・堅牢に動作します。
 
 関連: [English README](README.md) | [繁體中文 README](README.zh-TW.md)
 
@@ -8,9 +8,11 @@ CBETA（漢文）、パーリ三蔵（ローマ字）、GRETIL（サンスクリ
 
 - **ダイレクトIDアクセス**: テキストIDが分かっていれば即座に取得（最速！）
 - CBETA / Tipitaka / GRETIL に対する高速な正規表現検索（行番号つき）
+- CBETA検索は新字体など“現代の表記”でもヒットするよう正規化（旧字体・簡繁などの揺れを吸収）
 - タイトル検索（CBETA / Tipitaka / GRETIL）
 - 行番号や文字位置での前後コンテキスト取得
 - SAT オンライン検索（スマートキャッシュ付き）
+- チベット語のオンライン全文検索（BUDA/BDRC + Adarshah、EWTS/Wylieの簡易自動変換つき）
 - ワンコマンド・ブートストラップとインデックス構築
 
 ## インストール
@@ -114,9 +116,10 @@ daizo-cli update --yes              # CLI の再インストール
 - `tipitaka_title_search`, `tipitaka_search`
 - `gretil_title_search`, `gretil_search`
 - `sat_search`
+- `tibetan_search`（チベット語のオンライン全文検索。`sources:["buda","adarshah"]`。BUDAは `exact` でフレーズ検索、Adarshahは `wildcard`、`maxSnippetChars` でスニペット長）
 
 取得:
-- `cbeta_fetch`（`lb`, `lineNumber`, `contextBefore`, `contextAfter`, `headQuery`, `headIndex`, `format:"plain"` をサポート。`plain` は XMLタグ除去・gaiji解決・teiHeader除外・改行保持）
+- `cbeta_fetch`（`lb`, `lineNumber`, `contextBefore`, `contextAfter`, `headQuery`, `headIndex`, `format:"plain"`, `focusHighlight` をサポート。`plain` は XMLタグ除去・gaiji解決・teiHeader除外・改行保持。`focusHighlight` は最初のハイライト一致箇所付近にジャンプ）
 - `tipitaka_fetch`（`lineNumber`, `contextBefore`, `contextAfter` をサポート）
 - `gretil_fetch`（`lineNumber`, `contextBefore`, `contextAfter`, `headQuery`, `headIndex` をサポート）
 - `sat_fetch`, `sat_pipeline`（`exact` をサポート。デフォルトはフレーズ検索）
@@ -161,6 +164,13 @@ daizo-cli update --yes              # CLI の再インストール
 3. フレーズ検索が必要なら `*_search` → `_meta.fetchSuggestions` → `*_fetch`（`lineNumber`）を使う
 4. `*_pipeline` は多ファイル要約が必要な時のみ使用。既定で `autoFetch=false` を推奨
 
+### crosswalk（横断解決）とは
+
+daizo でいう **crosswalk** は、「人間のクエリ（経典名・別名・略称など）」から「実際に叩くべきコーパスID」と「次に呼ぶべき `*_fetch`」へ最短で橋渡しすることです。
+
+- `daizo_resolve({query})` を呼ぶ
+- 返ってくる候補と `_meta.fetchSuggestions` を使って、最小トークンで `*_fetch` に移る
+
 各ツールの description にも案内を記載。`initialize` 応答の `prompts.low-token-guide` でも方針を提示します。
 
 Tips: `DAIZO_HINT_TOP` でサジェスト件数を制御（既定 1）。
@@ -171,6 +181,8 @@ Tips: `DAIZO_HINT_TOP` でサジェスト件数を制御（既定 1）。
 - Tipitaka (romanized): https://github.com/VipassanaTech/tipitaka-xml
 - GRETIL (Sanskrit TEI): https://gretil.sub.uni-goettingen.de/
 - SAT (online): wrap7 / detail エンドポイント
+- BUDA/BDRC（チベット語オンライン）: library.bdrc.io / autocomplete.bdrc.io
+- Adarshah（チベット語オンライン）: online.adarshah.org / api.adarshah.org
 
 ## ディレクトリと環境変数
 
@@ -196,13 +208,13 @@ Tips: `DAIZO_HINT_TOP` でサジェスト件数を制御（既定 1）。
 
 ```bash
 # 自動一括（バンプ → コミット → タグ → プッシュ → GitHub リリース自動ノート）
-scripts/release.sh 0.3.3 --all
+scripts/release.sh 0.5.0 --all
 
 # CHANGELOG をノートに使用
-scripts/release.sh 0.3.3 --push --release
+scripts/release.sh 0.5.0 --push --release
 
 # ドライラン
-scripts/release.sh 0.3.3 --all --dry-run
+scripts/release.sh 0.5.0 --all --dry-run
 ```
 
 ## ライセンス

@@ -1,6 +1,6 @@
 # daizo-mcp
 
-面向 CBETA（中文）、巴利三藏（羅馬化）、GRETIL（梵文 TEI）與 SAT（線上）的高速佛典搜尋與擷取。包含 MCP 伺服器與 CLI，採用 Rust 實作，專注於速度與穩定性。
+面向 CBETA（中文）、巴利三藏（羅馬化）、GRETIL（梵文 TEI）、SAT（線上），以及透過線上語料進行的藏文全文搜尋（BUDA/BDRC、Adarshah）的高速佛典搜尋與擷取。包含 MCP 伺服器與 CLI，採用 Rust 實作，專注於速度與穩定性。
 
 相關: [English README](README.md) | [日本語 README](README.ja.md)
 
@@ -8,9 +8,11 @@
 
 - **直接 ID 存取**：已知文本 ID 時可即時取得（最快！）
 - CBETA / Tipitaka / GRETIL 文字內容快速正則搜尋（附行號）
+- CBETA 搜尋可接受較現代的字形（新舊字、簡繁等會被正規化以避免漏掉大正藏本文）
 - 標題搜尋（CBETA / Tipitaka / GRETIL）
 - 以行號或字元範圍精準擷取上下文
 - SAT 線上搜尋（含智慧快取）
+- 藏文線上全文搜尋（BUDA/BDRC + Adarshah，EWTS/Wylie 會嘗試自動轉為藏文字）
 - 一鍵初始化與索引建置
 
 ## 安裝
@@ -106,14 +108,18 @@ daizo-cli update --yes              # 重新安裝 CLI
 
 ## MCP 工具
 
+解決：
+- `daizo_resolve`（將標題/別名/ID 解析為跨語料庫的候選 ID 與建議下一步 fetch 呼叫）
+
 搜尋：
 - `cbeta_title_search`, `cbeta_search`
 - `tipitaka_title_search`, `tipitaka_search`
 - `gretil_title_search`, `gretil_search`
 - `sat_search`
+- `tibetan_search`（藏文線上全文搜尋；`sources:["buda","adarshah"]`，BUDA 支援 `exact` 短語搜尋，Adarshah 支援 `wildcard`，`maxSnippetChars` 控制片段長度）
 
 取得：
-- `cbeta_fetch`（支援 `lineNumber`, `contextBefore`, `contextAfter`）
+- `cbeta_fetch`（支援 `lb`, `lineNumber`, `contextBefore`, `contextAfter`, `headQuery`, `headIndex`, `format:"plain"`, `focusHighlight`；`plain` 會移除 XML 標籤、解決 gaiji、排除 `teiHeader`，並保留換行；`focusHighlight` 會跳到第一個高亮匹配附近）
 - `tipitaka_fetch`（支援 `lineNumber`, `contextBefore`, `contextAfter`）
 - `gretil_fetch`（支援 `lineNumber`, `contextBefore`, `contextAfter`）
 - `sat_fetch`, `sat_pipeline`
@@ -153,9 +159,10 @@ daizo-cli update --yes              # 重新安裝 CLI
 
 ### 標準流程（ID 未知時）
 
-1. 使用 `*_search` → 讀取 `_meta.fetchSuggestions`
-2. 以 `{ id, lineNumber, contextBefore:1, contextAfter:3 }` 呼叫 `*_fetch`
-3. 僅在需要多檔案摘要時使用 `*_pipeline`，且預設 `autoFetch=false`
+1. 先用 `daizo_resolve` 做 crosswalk（橫向解析），挑出語料庫與候選 ID
+2. 直接呼叫 `*_fetch({id})`（必要時加上 `lineNumber`/`contextBefore`/`contextAfter` 等）
+3. 若要精確片段：`*_search` → 讀取 `_meta.fetchSuggestions` → `*_fetch(lineNumber)`
+4. 僅在需要多檔案摘要時使用 `*_pipeline`，且預設 `autoFetch=false`
 
 工具描述中已標示此指引；`initialize` 亦提供 `prompts.low-token-guide` 以提示用法。
 
@@ -167,6 +174,8 @@ daizo-cli update --yes              # 重新安裝 CLI
 - Tipitaka（羅馬化）: https://github.com/VipassanaTech/tipitaka-xml
 - GRETIL（梵文 TEI）: https://gretil.sub.uni-goettingen.de/
 - SAT（線上）: wrap7 / detail 端點
+- BUDA/BDRC（藏文線上）: library.bdrc.io / autocomplete.bdrc.io
+- Adarshah（藏文線上）: online.adarshah.org / api.adarshah.org
 
 ## 目錄與環境變數
 
@@ -192,13 +201,13 @@ daizo-cli update --yes              # 重新安裝 CLI
 
 ```bash
 # 全自動（bump → commit → tag → push → GitHub 釋出，自動筆記）
-scripts/release.sh 0.3.3 --all
+scripts/release.sh 0.5.0 --all
 
 # 使用 CHANGELOG 筆記
-scripts/release.sh 0.3.3 --push --release
+scripts/release.sh 0.5.0 --push --release
 
 # 模擬執行
-scripts/release.sh 0.3.3 --all --dry-run
+scripts/release.sh 0.5.0 --all --dry-run
 ```
 
 ## 授權

@@ -1,6 +1,6 @@
 # daizo-mcp
 
-An MCP (Model Context Protocol) server plus CLI for fast Buddhist text search and retrieval. Supports CBETA (Chinese), Pāli Tipitaka (romanized), GRETIL (Sanskrit TEI), and SAT (online). Implemented in Rust for speed and reliability.
+An MCP (Model Context Protocol) server plus CLI for fast Buddhist text search and retrieval. Supports CBETA (Chinese), Pāli Tipitaka (romanized), GRETIL (Sanskrit TEI), SAT (online), and Tibetan full-text search via online corpora (BUDA/BDRC, Adarshah). Implemented in Rust for speed and reliability.
 
 See also: [日本語 README](README.ja.md) | [繁體中文 README](README.zh-TW.md)
 
@@ -8,9 +8,11 @@ See also: [日本語 README](README.ja.md) | [繁體中文 README](README.zh-TW.
 
 - **Direct ID Access**: Instant retrieval when you know the text ID (fastest path!)
 - Fast regex/content search with line numbers (CBETA/Tipitaka/GRETIL)
+- CBETA search works with modern forms too (new/old CJK variants are normalized so Taisho texts still hit)
 - Title search across CBETA, Tipitaka, and GRETIL indices
 - Precise context fetching by line number or character range
 - Optional SAT online search with smart caching
+- Tibetan online full-text search (BUDA/BDRC + Adarshah), with EWTS/Wylie best-effort auto-conversion
 - One-shot bootstrap and index build
 
 ## Install
@@ -114,9 +116,10 @@ Search:
 - `tipitaka_title_search`, `tipitaka_search`
 - `gretil_title_search`, `gretil_search`
 - `sat_search`
+- `tibetan_search` (online Tibetan full-text search; `sources:["buda","adarshah"]`, `exact` for phrase search on BUDA, `wildcard` for Adarshah, `maxSnippetChars` for snippet size)
 
 Fetch:
-- `cbeta_fetch` (supports `lb`, `lineNumber`, `contextBefore`, `contextAfter`, `headQuery`, `headIndex`, `format:"plain"`; `plain` strips XML, resolves gaiji, excludes `teiHeader`, preserves line breaks)
+- `cbeta_fetch` (supports `lb`, `lineNumber`, `contextBefore`, `contextAfter`, `headQuery`, `headIndex`, `format:"plain"`, `focusHighlight`; `plain` strips XML, resolves gaiji, excludes `teiHeader`, preserves line breaks; `focusHighlight` jumps near the first highlight match)
 - `tipitaka_fetch` (supports `lineNumber`, `contextBefore`, `contextAfter`)
 - `gretil_fetch` (supports `lineNumber`, `contextBefore`, `contextAfter`, `headQuery`, `headIndex`)
 - `sat_fetch`, `sat_pipeline` (supports `exact`; default is phrase search)
@@ -161,6 +164,13 @@ When the text ID is known, **skip search entirely**:
 3. If you need phrase search: `*_search` → read `_meta.fetchSuggestions` → `*_fetch` (`lineNumber`)
 4. Use `*_pipeline` only when you need a multi-file summary; set `autoFetch=false` by default
 
+### What “Crosswalk” Means Here
+
+In daizo, **crosswalk** means: start from a human query (title/alias/short name) and quickly map it to concrete corpus IDs and next calls.
+
+- Call `daizo_resolve({query})`
+- Use the returned candidates and `_meta.fetchSuggestions` to jump directly to the best `*_fetch`
+
 Tool descriptions mention these hints; `initialize` also exposes a `prompts.low-token-guide` entry for clients.
 
 Tip: Control number of suggestions via `DAIZO_HINT_TOP` (default 1).
@@ -171,6 +181,8 @@ Tip: Control number of suggestions via `DAIZO_HINT_TOP` (default 1).
 - Tipitaka (romanized): https://github.com/VipassanaTech/tipitaka-xml
 - GRETIL (Sanskrit TEI): https://gretil.sub.uni-goettingen.de/
 - SAT (online): wrap7/detail endpoints
+- BUDA/BDRC (online Tibetan): library.bdrc.io / autocomplete.bdrc.io
+- Adarshah (online Tibetan): online.adarshah.org / api.adarshah.org
 
 ## Directories and Env
 
@@ -196,13 +208,13 @@ Tip: Control number of suggestions via `DAIZO_HINT_TOP` (default 1).
 
 ```bash
 # Auto (bump → commit → tag → push → GitHub release with auto-notes)
-scripts/release.sh 0.3.3 --all
+scripts/release.sh 0.5.0 --all
 
 # CHANGELOG notes instead of auto-notes
-scripts/release.sh 0.3.3 --push --release
+scripts/release.sh 0.5.0 --push --release
 
 # Dry run
-scripts/release.sh 0.3.3 --all --dry-run
+scripts/release.sh 0.5.0 --all --dry-run
 ```
 
 ## License
