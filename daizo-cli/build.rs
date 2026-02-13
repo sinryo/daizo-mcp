@@ -1,6 +1,9 @@
 use std::process::Command;
 
 fn main() {
+    // Ensure rebuild when package metadata changes (e.g., version bump).
+    println!("cargo:rerun-if-changed=Cargo.toml");
+
     // ビルド日時を設定
     let output = Command::new("date")
         .args(["+%Y-%m-%d %H:%M:%S"])
@@ -8,6 +11,12 @@ fn main() {
         .expect("Failed to execute date command");
     let build_date = String::from_utf8_lossy(&output.stdout).trim().to_string();
     println!("cargo:rustc-env=BUILD_DATE={}", build_date);
+
+    // Mirror package version into a build-script driven env var so version bumps
+    // reliably propagate even if cargo doesn't rebuild on manifest-only changes.
+    if let Ok(ver) = std::env::var("CARGO_PKG_VERSION") {
+        println!("cargo:rustc-env=DAIZO_VERSION={}", ver);
+    }
 
     // Git コミットハッシュを取得（利用可能な場合）
     if let Ok(output) = Command::new("git")

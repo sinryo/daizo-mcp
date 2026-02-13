@@ -21,7 +21,7 @@ mod regex_utils;
 /// バージョン情報を生成
 fn long_version() -> &'static str {
     concat!(
-        env!("CARGO_PKG_VERSION"),
+        env!("DAIZO_VERSION"),
         "\nBuilt: ",
         env!("BUILD_DATE"),
         "\nCommit: ",
@@ -33,7 +33,7 @@ fn long_version() -> &'static str {
 #[command(
     name = "daizo-cli",
     about = "High-performance Buddhist text search and retrieval CLI",
-    version,
+    version = env!("DAIZO_VERSION"),
     long_version = long_version()
 )]
 struct Cli {
