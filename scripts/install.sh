@@ -153,6 +153,21 @@ fi
 
 echo -e "\033[36m📥 Downloading Buddhist texts and building indexes... / お経データのダウンロードとインデックス構築中... / 正在下載佛經文本並構建索引...\033[0m"
 echo "[index] rebuilding indexes (this will automatically download/update data)"
+
+echo -e "\033[36m📚 Fetching SARIT TEI P5 corpus... / SARIT（TEI P5）コーパスを取得中... / 正在下載 SARIT（TEI P5）語料庫...\033[0m"
+SARIT_DIR="$PREFIX/SARIT-corpus"
+if [ -d "$SARIT_DIR/.git" ]; then
+  echo "[sarit] repo already present, updating: $SARIT_DIR"
+  git -C "$SARIT_DIR" pull --ff-only || true
+elif [ -d "$SARIT_DIR" ]; then
+  echo "[sarit] directory exists but is not a git repo, skip clone: $SARIT_DIR"
+else
+  echo "[sarit] clone -> $SARIT_DIR"
+  git clone --depth 1 "https://github.com/sarit/SARIT-corpus.git" "$SARIT_DIR" || {
+    echo "[warn] SARIT clone failed; you can retry later: git clone --depth 1 https://github.com/sarit/SARIT-corpus.git $SARIT_DIR" >&2
+  }
+fi
+
 DAIZO_DIR="$PREFIX" "$BIN_OUT/daizo-cli" index-rebuild --source all || {
   echo "[warn] index rebuild failed; you can run: DAIZO_DIR=$PREFIX $BIN_OUT/daizo-cli index-rebuild --source all" >&2
 }
