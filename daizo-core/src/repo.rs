@@ -130,6 +130,13 @@ pub fn ensure_sarit_data_at(root: &Path) -> bool {
     )
 }
 
+pub fn ensure_muktabodha_dir(root: &Path) {
+    if let Some(parent) = root.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::create_dir_all(root);
+}
+
 pub fn clone_tipitaka_sparse(target_dir: &Path) -> bool {
     log(&format!(
         "cloning Tipitaka (romn only) -> {}",

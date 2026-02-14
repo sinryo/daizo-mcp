@@ -168,6 +168,41 @@ else
   }
 fi
 
+echo -e "\033[36m📚 Fetching MUKTABODHA Sanskrit library (IAST)... / MUKTABODHA（IAST）ライブラリを取得中... / 正在下載 MUKTABODHA（IAST）語料庫...\033[0m"
+MUKTA_URL="https://muktalib7.com/DL_CATALOG_ROOT/MUKTABODHA-LIBRARY-IAST.zip"
+MUKTA_DIR="$PREFIX/MUKTABODHA"
+MUKTA_ZIP="$MUKTA_DIR/MUKTABODHA-LIBRARY-IAST.zip"
+mkdir -p "$MUKTA_DIR"
+
+if [ -f "$MUKTA_ZIP" ]; then
+  echo "[muktabodha] zip already present, skip download: $MUKTA_ZIP"
+else
+  echo "[muktabodha] download -> $MUKTA_ZIP"
+  if command -v curl >/dev/null 2>&1; then
+    curl -L --fail --retry 3 -o "$MUKTA_ZIP" "$MUKTA_URL"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -O "$MUKTA_ZIP" "$MUKTA_URL"
+  else
+    echo "[error] neither curl nor wget is available to download $MUKTA_URL" >&2
+    exit 1
+  fi
+fi
+
+MUKTA_STAMP="$MUKTA_DIR/.extracted-muktabodha"
+if [ -f "$MUKTA_STAMP" ] || find "$MUKTA_DIR" -mindepth 1 -not -name "$(basename "$MUKTA_ZIP")" -print -quit | grep -q . ; then
+  echo "[muktabodha] already extracted, skip unzip"
+else
+  echo "[muktabodha] unzip into $MUKTA_DIR"
+  if command -v unzip >/dev/null 2>&1; then
+    unzip -oq "$MUKTA_ZIP" -d "$MUKTA_DIR"
+    touch "$MUKTA_STAMP"
+  else
+    echo "[error] 'unzip' command not found; please install it and re-run" >&2
+    exit 1
+  fi
+  echo -e "\033[32m✅ MUKTABODHA fetched and extracted / MUKTABODHAの取得と展開が完了 / MUKTABODHA 下載並解壓完成\033[0m"
+fi
+
 DAIZO_DIR="$PREFIX" "$BIN_OUT/daizo-cli" index-rebuild --source all || {
   echo "[warn] index rebuild failed; you can run: DAIZO_DIR=$PREFIX $BIN_OUT/daizo-cli index-rebuild --source all" >&2
 }

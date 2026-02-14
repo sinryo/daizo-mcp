@@ -110,6 +110,8 @@ static TIPITAKA_XML_PATHS_CACHE: OnceLock<Mutex<HashMap<PathBuf, Arc<Vec<PathBuf
     OnceLock::new();
 static SARIT_XML_PATHS_CACHE: OnceLock<Mutex<HashMap<PathBuf, Arc<Vec<PathBuf>>>>> =
     OnceLock::new();
+static MUKTABODHA_PATHS_CACHE: OnceLock<Mutex<HashMap<PathBuf, Arc<Vec<PathBuf>>>>> =
+    OnceLock::new();
 
 fn is_sarit_xml(path: &Path, name: &str) -> bool {
     if !name.ends_with(".xml") {
@@ -125,6 +127,20 @@ fn is_sarit_xml(path: &Path, name: &str) -> bool {
     // Exclude the header template file(s) if present.
     if name.contains("tei-header-template") || name.starts_with("00-sarit-tei-header") {
         return false;
+    }
+    true
+}
+
+fn is_muktabodha_file(path: &Path, name: &str) -> bool {
+    if !(name.ends_with(".xml") || name.ends_with(".txt")) {
+        return false;
+    }
+    let p = path.to_string_lossy();
+    // Exclude typical packaging artifacts if present.
+    for bad in ["/.git/", "/__MACOSX/"].iter() {
+        if p.contains(bad) {
+            return false;
+        }
     }
     true
 }
@@ -422,6 +438,115 @@ pub fn build_sarit_index(root: &Path) -> Vec<IndexEntry> {
                 path: abs.to_string_lossy().to_string(),
                 meta: Some(meta),
             })
+        })
+        .collect()
+}
+
+/// MUKTABODHA 用: zip 展開ディレクトリから .xml/.txt をインデックス化。
+/// - XML: teiHeader/titleStmt/title を優先的に拾う（無ければ stem）
+/// - TXT: タイトルは stem
+pub fn build_muktabodha_index(root: &Path) -> Vec<IndexEntry> {
+    let paths = collect_xml_paths(root, |path, name| is_muktabodha_file(path, name));
+
+    paths
+        .par_iter()
+        .filter_map(|p| {
+            let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
+            let id = stem_from(p);
+            let abs = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+
+            if ext == "xml" {
+                let f = File::open(p).ok()?;
+                let mut reader = Reader::from_reader(BufReader::new(f));
+                reader.config_mut().trim_text_start = true;
+                reader.config_mut().trim_text_end = true;
+                let mut buf = Vec::new();
+
+                let mut title: Option<String> = None;
+                let mut in_header = false;
+                let mut in_title = false;
+                let mut path_stack: Vec<Vec<u8>> = Vec::new();
+
+                let mut events = 0usize;
+                let max_events = 60_000usize;
+                loop {
+                    if events >= max_events {
+                        break;
+                    }
+                    match reader.read_event_into(&mut buf) {
+                        Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                            let name_owned = e.name().as_ref().to_owned();
+                            let name = local_name(&name_owned).to_vec();
+                            path_stack.push(name.clone());
+                            if name.as_slice() == b"teiHeader" {
+                                in_header = true;
+                            }
+                            if in_header
+                                && name.as_slice() == b"title"
+                                && path_stack.iter().any(|n| n.as_slice() == b"titleStmt")
+                            {
+                                in_title = true;
+                            }
+                        }
+                        Ok(Event::End(e)) => {
+                            let name_owned = e.name().as_ref().to_owned();
+                            let name = local_name(&name_owned);
+                            if name == b"title" {
+                                in_title = false;
+                            }
+                            if name == b"teiHeader" {
+                                if title.is_some() {
+                                    break;
+                                }
+                                in_header = false;
+                            }
+                            path_stack.pop();
+                        }
+                        Ok(Event::Text(t)) => {
+                            if in_title && title.is_none() {
+                                let t = t.decode().unwrap_or_default().into_owned();
+                                let tt = t.split_whitespace().collect::<Vec<_>>().join(" ");
+                                if !tt.trim().is_empty() {
+                                    title = Some(tt);
+                                }
+                            }
+                        }
+                        Ok(Event::Eof) => break,
+                        Err(_) => break,
+                        _ => {}
+                    }
+                    buf.clear();
+                    events += 1;
+                }
+
+                let title = title.unwrap_or_else(|| id.clone());
+                let mut meta: BTreeMap<String, String> = BTreeMap::new();
+                meta.insert(
+                    "indexVersion".to_string(),
+                    "muktabodha_index_v1".to_string(),
+                );
+                meta.insert("ext".to_string(), "xml".to_string());
+
+                Some(IndexEntry {
+                    id,
+                    title,
+                    path: abs.to_string_lossy().to_string(),
+                    meta: Some(meta),
+                })
+            } else {
+                let mut meta: BTreeMap<String, String> = BTreeMap::new();
+                meta.insert(
+                    "indexVersion".to_string(),
+                    "muktabodha_index_v1".to_string(),
+                );
+                meta.insert("ext".to_string(), "txt".to_string());
+                Some(IndexEntry {
+                    id: id.clone(),
+                    title: id,
+                    path: abs.to_string_lossy().to_string(),
+                    meta: Some(meta),
+                })
+            }
         })
         .collect()
 }
@@ -3174,6 +3299,79 @@ pub fn sarit_grep(
             })
         })
         .collect::<Vec<_>>();
+
+    grep_sort_best_first(&mut results, max_results);
+    results
+}
+
+pub fn muktabodha_grep(
+    root: &Path,
+    query: &str,
+    max_results: usize,
+    max_matches_per_file: usize,
+) -> Vec<GrepResult> {
+    let matcher = match RegexMatcherBuilder::new()
+        .case_insensitive(true)
+        .multi_line(true)
+        .build(query)
+    {
+        Ok(m) => m,
+        Err(_) => return Vec::new(),
+    };
+
+    let paths = collect_xml_paths_cached(&MUKTABODHA_PATHS_CACHE, root, |path, name| {
+        is_muktabodha_file(path, name)
+    });
+
+    let mut results: Vec<GrepResult> = paths
+        .par_iter()
+        .filter_map(|p| {
+            let rg_matches = ripgrep_search_file(p, &matcher, max_matches_per_file)?;
+            let file_size = std::fs::metadata(p).ok().map(|m| m.len()).unwrap_or(0);
+
+            let grep_matches: Vec<GrepMatch> = rg_matches
+                .iter()
+                .map(|m| {
+                    let highlight = matcher
+                        .find(m.line_content.as_bytes())
+                        .ok()
+                        .flatten()
+                        .map(|mat| {
+                            m.line_content
+                                .get(mat.start()..mat.end())
+                                .unwrap_or("")
+                                .to_string()
+                        })
+                        .unwrap_or_default();
+
+                    GrepMatch {
+                        context: m.line_content.clone(),
+                        highlight,
+                        juan_number: None,
+                        section: None,
+                        line_number: Some(m.line_number as usize),
+                    }
+                })
+                .collect();
+
+            let file_id = stem_from(p);
+            let title = file_id.clone();
+            let total_matches = grep_matches.len();
+            let fetch_hints = FetchHints {
+                recommended_parts: vec!["full".to_string()],
+                total_content_size: Some(format!("{}KB", file_size / 1024)),
+                structure_info: Vec::new(),
+            };
+            Some(GrepResult {
+                file_path: p.to_string_lossy().to_string(),
+                file_id,
+                title,
+                matches: grep_matches,
+                total_matches,
+                fetch_hints,
+            })
+        })
+        .collect();
 
     grep_sort_best_first(&mut results, max_results);
     results

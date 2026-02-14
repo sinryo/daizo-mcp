@@ -27,6 +27,9 @@ pub fn gretil_root() -> PathBuf {
 pub fn sarit_root() -> PathBuf {
     daizo_home().join("SARIT-corpus")
 }
+pub fn muktabodha_root() -> PathBuf {
+    daizo_home().join("MUKTABODHA")
+}
 pub fn cache_dir() -> PathBuf {
     daizo_home().join("cache")
 }
@@ -601,6 +604,90 @@ pub fn resolve_sarit_by_id(index: &[IndexEntry], id: &str) -> Option<PathBuf> {
     find_exact_file_by_name(&sarit_root(), &format!("{}.xml", id)).or_else(|| {
         find_exact_file_by_name(&sarit_root().join("transliterated"), &format!("{}.xml", id))
     })
+}
+
+/// Fast direct path resolution for MUKTABODHA.
+/// Supports: file stem (id) and tries both .xml and .txt under DAIZO_DIR/MUKTABODHA.
+pub fn resolve_muktabodha_path_direct(id: &str) -> Option<PathBuf> {
+    if id.contains('/') || id.contains('\\') {
+        return None;
+    }
+    let root = muktabodha_root();
+
+    // If the user passed a filename, try it directly.
+    let direct = root.join(id);
+    if direct.exists() {
+        return Some(direct);
+    }
+
+    // Otherwise try common extensions.
+    for ext in ["xml", "txt"].iter() {
+        let p = root.join(format!("{}.{}", id, ext));
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Resolve a MUKTABODHA path by id (file stem) using fast direct resolution first, then index fallbacks.
+pub fn resolve_muktabodha_by_id(index: &[IndexEntry], id: &str) -> Option<PathBuf> {
+    if let Some(path) = resolve_muktabodha_path_direct(id) {
+        return Some(path);
+    }
+    for e in index.iter() {
+        if Path::new(&e.path)
+            .file_stem()
+            .map(|s| s == id)
+            .unwrap_or(false)
+        {
+            return Some(PathBuf::from(&e.path));
+        }
+    }
+
+    // Exact filename fallback.
+    if let Some(p) = find_exact_file_by_name(&muktabodha_root(), &format!("{}.xml", id)) {
+        return Some(p);
+    }
+    if let Some(p) = find_exact_file_by_name(&muktabodha_root(), &format!("{}.txt", id)) {
+        return Some(p);
+    }
+
+    // Last resort: scan the directory for a matching stem across xml/txt.
+    let id_lower = id.to_lowercase();
+    let result: Mutex<Option<PathBuf>> = Mutex::new(None);
+    WalkBuilder::new(&muktabodha_root())
+        .hidden(false)
+        .git_ignore(false)
+        .git_global(false)
+        .git_exclude(false)
+        .build_parallel()
+        .run(|| {
+            let id_lower = id_lower.clone();
+            let result = &result;
+            Box::new(move |entry| {
+                if result.lock().unwrap().is_some() {
+                    return ignore::WalkState::Quit;
+                }
+                if let Ok(e) = entry {
+                    if e.file_type().is_some_and(|ft| ft.is_file()) {
+                        let p = e.path();
+                        let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
+                        if ext != "xml" && ext != "txt" {
+                            return ignore::WalkState::Continue;
+                        }
+                        if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                            if stem.to_lowercase() == id_lower {
+                                *result.lock().unwrap() = Some(p.to_path_buf());
+                                return ignore::WalkState::Quit;
+                            }
+                        }
+                    }
+                }
+                ignore::WalkState::Continue
+            })
+        });
+    result.into_inner().unwrap()
 }
 
 /// Resolve a GRETIL TEI path by id (file stem) using fast direct resolution first, then index fallbacks.

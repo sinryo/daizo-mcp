@@ -1,15 +1,15 @@
 use clap::{Parser, Subcommand};
 use daizo_core::path_resolver::{
     cache_dir, cbeta_root, find_exact_file_by_name, find_tipitaka_content_for_base, gretil_root,
-    resolve_cbeta_path_by_id, resolve_gretil_by_id, resolve_gretil_path_direct,
-    resolve_sarit_by_id, resolve_sarit_path_direct, resolve_tipitaka_by_id, sarit_root,
-    tipitaka_root,
+    muktabodha_root, resolve_cbeta_path_by_id, resolve_gretil_by_id, resolve_gretil_path_direct,
+    resolve_muktabodha_by_id, resolve_muktabodha_path_direct, resolve_sarit_by_id,
+    resolve_sarit_path_direct, resolve_tipitaka_by_id, sarit_root, tipitaka_root,
 };
 use daizo_core::text_utils::compute_match_score_sanskrit;
 use daizo_core::text_utils::{compute_match_score_precomputed, normalized, PrecomputedQuery};
 use daizo_core::{
-    build_cbeta_index, build_gretil_index, build_index, build_sarit_index, build_tipitaka_index,
-    extract_text,
+    build_cbeta_index, build_gretil_index, build_index, build_muktabodha_index, build_sarit_index,
+    build_tipitaka_index, extract_text,
 };
 use serde::Serialize;
 use std::env;
@@ -45,7 +45,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Initialize data: clone xml-p5, tipitaka-xml, SARIT-corpus and build indices
+    /// Initialize data: clone xml-p5, tipitaka-xml, SARIT-corpus and build indices (and prepare other corpora)
     Init {
         /// Override HOME/.daizo base
         #[arg(long)]
@@ -201,6 +201,93 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
+    /// Search MUKTABODHA titles (index-based)
+    MuktabodhaTitleSearch {
+        /// Query string
+        #[arg(long)]
+        query: String,
+        /// Max results
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        /// Output JSON
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Fetch MUKTABODHA text by id or query
+    MuktabodhaFetch {
+        /// File stem id
+        #[arg(long)]
+        id: Option<String>,
+        /// Alternative: search query to pick best match
+        #[arg(long)]
+        query: Option<String>,
+        /// Include <note> text (XML only)
+        #[arg(long, default_value_t = false)]
+        include_notes: bool,
+        /// Return full text (no slicing)
+        #[arg(long, default_value_t = false)]
+        full: bool,
+        /// Highlight string/regex pattern
+        #[arg(long)]
+        highlight: Option<String>,
+        /// Interpret highlight as regex
+        #[arg(long, default_value_t = false)]
+        highlight_regex: bool,
+        /// Highlight prefix
+        #[arg(long)]
+        highlight_prefix: Option<String>,
+        /// Highlight suffix
+        #[arg(long)]
+        highlight_suffix: Option<String>,
+        /// Headings preview limit (XML only)
+        #[arg(long, default_value_t = 20)]
+        headings_limit: usize,
+        /// Pagination: start char (inclusive)
+        #[arg(long)]
+        start_char: Option<usize>,
+        /// Pagination: end char (exclusive)
+        #[arg(long)]
+        end_char: Option<usize>,
+        /// Pagination: max chars
+        #[arg(long)]
+        max_chars: Option<usize>,
+        /// Pagination: page index
+        #[arg(long)]
+        page: Option<usize>,
+        /// Pagination: page size
+        #[arg(long)]
+        page_size: Option<usize>,
+        /// Target line number for context extraction
+        #[arg(long)]
+        line_number: Option<usize>,
+        /// Number of lines before target line (default: 10)
+        #[arg(long, default_value_t = 10)]
+        context_before: usize,
+        /// Number of lines after target line (default: 100)
+        #[arg(long, default_value_t = 100)]
+        context_after: usize,
+        /// Number of lines before/after target line (deprecated, use context_before/context_after)
+        #[arg(long)]
+        context_lines: Option<usize>,
+        /// Output JSON
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Search MUKTABODHA corpus (content-based)
+    MuktabodhaSearch {
+        /// Query string (regular expression)
+        #[arg(long)]
+        query: String,
+        /// Maximum number of files to return
+        #[arg(long, default_value_t = 20)]
+        max_results: usize,
+        /// Maximum matches per file
+        #[arg(long, default_value_t = 5)]
+        max_matches_per_file: usize,
+        /// Output JSON
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
     /// Search SARIT titles (index-based)
     SaritTitleSearch {
         /// Query string
@@ -298,7 +385,7 @@ enum Commands {
     },
     /// Uninstall binaries from $DAIZO_DIR/bin (and optionally data/cache)
     Uninstall {
-        /// Also remove data (xml-p5, tipitaka-xml, SARIT-corpus) and cache under $DAIZO_DIR
+        /// Also remove data (xml-p5, tipitaka-xml, SARIT-corpus, MUKTABODHA) and cache under $DAIZO_DIR
         #[arg(long, default_value_t = false)]
         purge: bool,
     },
@@ -640,9 +727,18 @@ enum Commands {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Build MUKTABODHA index under ~/.daizo/cache/muktabodha-index.json
+    MuktabodhaIndex {
+        /// Root directory of MUKTABODHA (default ~/.daizo/MUKTABODHA)
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Output path (default ~/.daizo/cache/muktabodha-index.json)
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Rebuild search indexes (deletes cache JSON first)
     IndexRebuild {
-        /// Source to rebuild: cbeta | tipitaka | sarit | all
+        /// Source to rebuild: cbeta | tipitaka | sarit | muktabodha | all
         #[arg(long, default_value = "all")]
         source: String,
     },
@@ -1048,6 +1144,20 @@ fn main() -> anyhow::Result<()> {
         } => {
             cmd_gretil::gretil_search(&query, max_results, max_matches_per_file, json)?;
         }
+        Commands::MuktabodhaTitleSearch { query, limit, json } => {
+            cmd_muktabodha::muktabodha_title_search(&query, limit, json)?;
+        }
+        Commands::MuktabodhaFetch { .. } => {
+            cmd_muktabodha::muktabodha_fetch(&cli.command)?;
+        }
+        Commands::MuktabodhaSearch {
+            query,
+            max_results,
+            max_matches_per_file,
+            json,
+        } => {
+            cmd_muktabodha::muktabodha_search(&query, max_results, max_matches_per_file, json)?;
+        }
         Commands::SaritTitleSearch { query, limit, json } => {
             cmd_sarit::sarit_title_search(&query, limit, json)?;
         }
@@ -1226,6 +1336,26 @@ fn main() -> anyhow::Result<()> {
                 })?
             );
         }
+        Commands::MuktabodhaIndex { root, out } => {
+            let default_base = default_daizo().join("MUKTABODHA");
+            let base = root.unwrap_or(default_base.clone());
+            // ディレクトリだけは作っておく（実データのDLは install.sh 側）
+            let _ = std::fs::create_dir_all(&default_base);
+
+            let entries = build_muktabodha_index(&base);
+            let outp = out.unwrap_or(default_daizo().join("cache").join("muktabodha-index.json"));
+            if let Some(parent) = outp.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&outp, serde_json::to_vec(&entries)?)?;
+            println!(
+                "{}",
+                serde_json::to_string(&IndexResult {
+                    count: entries.len(),
+                    out: outp.to_string_lossy().as_ref()
+                })?
+            );
+        }
         Commands::TipitakaTitleSearch { query, limit, json } => {
             cmd_tipitaka::tipitaka_title_search(&query, limit, json)?;
         }
@@ -1295,6 +1425,9 @@ fn main() -> anyhow::Result<()> {
             if src == "sarit" || src == "all" {
                 let _ = fs::remove_file(cache.join("sarit-index.json"));
             }
+            if src == "muktabodha" || src == "all" {
+                let _ = fs::remove_file(cache.join("muktabodha-index.json"));
+            }
 
             // Call individual index commands
             if src == "cbeta" || src == "all" {
@@ -1333,6 +1466,21 @@ fn main() -> anyhow::Result<()> {
                     summary.insert("sarit".to_string(), serde_json::json!("completed"));
                 } else {
                     eprintln!("[error] SARIT index rebuild failed");
+                }
+            }
+            if src == "muktabodha" || src == "all" {
+                eprintln!("[rebuild] Running muktabodha-index...");
+                let cli_path = std::env::current_exe()?;
+                let ok = run(
+                    cli_path.to_string_lossy().as_ref(),
+                    &["muktabodha-index"],
+                    None,
+                );
+                if ok {
+                    rebuilt.push("muktabodha");
+                    summary.insert("muktabodha".to_string(), serde_json::json!("completed"));
+                } else {
+                    eprintln!("[error] MUKTABODHA index rebuild failed");
                 }
             }
 
@@ -1412,6 +1560,7 @@ fn main() -> anyhow::Result<()> {
             let cbeta = base.join("xml-p5");
             let tipi = base.join("tipitaka-xml");
             let sarit = base.join("SARIT-corpus");
+            let mukta = base.join("MUKTABODHA");
             let cache = base.join("cache");
             println!("DAIZO_DIR: {}", base.display());
             println!("bin: {}", bin.display());
@@ -1446,6 +1595,14 @@ fn main() -> anyhow::Result<()> {
                     "OK"
                 } else {
                     "MISSING (will clone on demand)"
+                }
+            );
+            println!(
+                " - MUKTABODHA: {}",
+                if mukta.exists() {
+                    "OK"
+                } else {
+                    "MISSING (will download on install)"
                 }
             );
             println!(
@@ -1489,10 +1646,12 @@ fn main() -> anyhow::Result<()> {
                 let cbeta = base.join("xml-p5");
                 let tipi = base.join("tipitaka-xml");
                 let sarit = base.join("SARIT-corpus");
+                let mukta = base.join("MUKTABODHA");
                 let cache = base.join("cache");
                 let _ = std::fs::remove_dir_all(&cbeta);
                 let _ = std::fs::remove_dir_all(&tipi);
                 let _ = std::fs::remove_dir_all(&sarit);
+                let _ = std::fs::remove_dir_all(&mukta);
                 let _ = std::fs::remove_dir_all(&cache);
                 println!("[purge] removed data/cache under {}", base.display());
             }
@@ -1700,6 +1859,26 @@ pub(crate) fn load_or_build_sarit_index_cli() -> Vec<daizo_core::IndexEntry> {
     entries
 }
 
+pub(crate) fn load_or_build_muktabodha_index_cli() -> Vec<daizo_core::IndexEntry> {
+    let out = cache_dir().join("muktabodha-index.json");
+    if let Ok(b) = std::fs::read(&out) {
+        if let Ok(v) = serde_json::from_slice::<Vec<daizo_core::IndexEntry>>(&b) {
+            let missing = v
+                .iter()
+                .take(10)
+                .filter(|e| !std::path::Path::new(&e.path).exists())
+                .count();
+            if !v.is_empty() && missing == 0 {
+                return v;
+            }
+        }
+    }
+    let entries = build_muktabodha_index(&muktabodha_root());
+    let _ = std::fs::create_dir_all(cache_dir());
+    let _ = std::fs::write(&out, serde_json::to_vec(&entries).unwrap_or_default());
+    entries
+}
+
 // directory scans are provided by daizo_core::path_resolver
 
 pub(crate) fn resolve_tipitaka_path(id: Option<&str>, query: Option<&str>) -> PathBuf {
@@ -1785,6 +1964,30 @@ pub(crate) fn resolve_sarit_path_cli(id: Option<&str>, query: Option<&str>) -> P
         }
     } else if let Some(q) = query {
         let idx = load_or_build_sarit_index_cli();
+        if let Some(hit) = best_match_gretil(&idx, q, 1).into_iter().next() {
+            return PathBuf::from(&hit.entry.path);
+        }
+    }
+    PathBuf::new()
+}
+
+pub(crate) fn resolve_muktabodha_path_cli(id: Option<&str>, query: Option<&str>) -> PathBuf {
+    if let Some(id_str) = id {
+        if let Some(p) = resolve_muktabodha_path_direct(id_str) {
+            return p;
+        }
+        let idx = load_or_build_muktabodha_index_cli();
+        if let Some(p) = resolve_muktabodha_by_id(&idx, id_str) {
+            return p;
+        }
+        if let Some(p) = find_exact_file_by_name(&muktabodha_root(), &format!("{}.xml", id_str)) {
+            return p;
+        }
+        if let Some(p) = find_exact_file_by_name(&muktabodha_root(), &format!("{}.txt", id_str)) {
+            return p;
+        }
+    } else if let Some(q) = query {
+        let idx = load_or_build_muktabodha_index_cli();
         if let Some(hit) = best_match_gretil(&idx, q, 1).into_iter().next() {
             return PathBuf::from(&hit.entry.path);
         }
@@ -2004,4 +2207,7 @@ pub(crate) fn sniff_xml_encoding(head: &[u8]) -> Option<String> {
 
 //
 mod cmd;
-use cmd::{cbeta as cmd_cbeta, gretil as cmd_gretil, sarit as cmd_sarit, tipitaka as cmd_tipitaka};
+use cmd::{
+    cbeta as cmd_cbeta, gretil as cmd_gretil, muktabodha as cmd_muktabodha, sarit as cmd_sarit,
+    tipitaka as cmd_tipitaka,
+};

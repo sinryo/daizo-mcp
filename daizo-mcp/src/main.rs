@@ -4,11 +4,11 @@ use daizo_core::text_utils::{
     token_jaccard, ws_cjk_variant_fuzzy_regex_literal,
 };
 use daizo_core::{
-    build_cbeta_index, build_gretil_index, build_sarit_index, build_tipitaka_index,
-    cbeta_gaiji_map_fast, cbeta_grep, extract_cbeta_juan, extract_cbeta_juan_plain,
-    extract_cbeta_plain_from_snippet, extract_text, extract_text_around_line_asymmetric,
-    extract_text_opts, gretil_grep, list_heads_cbeta, list_heads_generic, sarit_grep,
-    tipitaka_grep, IndexEntry,
+    build_cbeta_index, build_gretil_index, build_muktabodha_index, build_sarit_index,
+    build_tipitaka_index, cbeta_gaiji_map_fast, cbeta_grep, extract_cbeta_juan,
+    extract_cbeta_juan_plain, extract_cbeta_plain_from_snippet, extract_text,
+    extract_text_around_line_asymmetric, extract_text_opts, gretil_grep, list_heads_cbeta,
+    list_heads_generic, muktabodha_grep, sarit_grep, tipitaka_grep, IndexEntry,
 };
 use encoding_rs::Encoding;
 use ewts::EwtsConverter;
@@ -28,7 +28,8 @@ use std::time::{Duration, Instant};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 use daizo_core::path_resolver::{
     cache_dir, cbeta_root, daizo_home, find_exact_file_by_name, find_tipitaka_content_for_base,
-    gretil_root, resolve_cbeta_path_by_id, resolve_sarit_by_id, resolve_sarit_path_direct,
+    gretil_root, muktabodha_root, resolve_cbeta_path_by_id, resolve_muktabodha_by_id,
+    resolve_muktabodha_path_direct, resolve_sarit_by_id, resolve_sarit_path_direct,
     resolve_tipitaka_by_id, sarit_root, tipitaka_root,
 };
 
@@ -221,6 +222,10 @@ fn ensure_tipitaka_data() {
 
 fn ensure_sarit_data() {
     let _ = daizo_core::repo::ensure_sarit_data_at(&sarit_root());
+}
+
+fn ensure_muktabodha_dir() {
+    daizo_core::repo::ensure_muktabodha_dir(&muktabodha_root());
 }
 
 fn load_index(path: &Path) -> Option<Vec<IndexEntry>> {
@@ -480,6 +485,49 @@ fn tools_list() -> Vec<serde_json::Value> {
             "full":{"type":"boolean"},
             "includeNotes":{"type":"boolean"}
         },"required":["query"]})),
+        // MUKTABODHA
+        tool("muktabodha_title_search", "Title-based search in MUKTABODHA Sanskrit library (IAST). If file stem is known, use muktabodha_fetch with id.", json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"}},"required":["query"]})),
+        tool("muktabodha_search", "Fast regex search over MUKTABODHA; returns _meta.fetchSuggestions (use muktabodha_fetch with id+lineNumber+highlight).", json!({"type":"object","properties":{
+            "query":{"type":"string","description":"Regular expression pattern to search for"},
+            "maxResults":{"type":"number","description":"Maximum number of files to return (default: 20)"},
+            "maxMatchesPerFile":{"type":"number","description":"Maximum matches per file (default: 5)"}
+        },"required":["query"]})),
+        tool("muktabodha_fetch", "Retrieve MUKTABODHA text by ID (file stem). Supports both .xml (TEI) and .txt files.", json!({"type":"object","properties":{
+            "id":{"type":"string"},
+            "query":{"type":"string"},
+            "includeNotes":{"type":"boolean"},
+            "full":{"type":"boolean"},
+            "highlight":{"type":"string"},
+            "highlightRegex":{"type":"boolean"},
+            "highlightPrefix":{"type":"string"},
+            "highlightSuffix":{"type":"string"},
+            "headingsLimit":{"type":"number"},
+            "startChar":{"type":"number"},"endChar":{"type":"number"},"maxChars":{"type":"number"},
+            "page":{"type":"number"},"pageSize":{"type":"number"},
+            "lineNumber":{"type":"number"},
+            "contextBefore":{"type":"number"},
+            "contextAfter":{"type":"number"},
+            "contextLines":{"type":"number"}
+        }})),
+        tool("muktabodha_pipeline", "MUKTABODHA summarize/context pipeline; set autoFetch=false for summary-only.", json!({"type":"object","properties":{
+            "query":{"type":"string"},
+            "maxResults":{"type":"number"},
+            "maxMatchesPerFile":{"type":"number"},
+            "contextBefore":{"type":"number"},
+            "contextAfter":{"type":"number"},
+            "autoFetch":{"type":"boolean"},
+            "autoFetchFiles":{"type":"number"},
+            "includeMatchLine":{"type":"boolean"},
+            "includeHighlightSnippet":{"type":"boolean"},
+            "snippetPrefix":{"type":"string"},
+            "snippetSuffix":{"type":"string"},
+            "highlight":{"type":"string"},
+            "highlightRegex":{"type":"boolean"},
+            "highlightPrefix":{"type":"string"},
+            "highlightSuffix":{"type":"string"},
+            "full":{"type":"boolean"},
+            "includeNotes":{"type":"boolean"}
+        },"required":["query"]})),
     ]
 }
 
@@ -671,6 +719,29 @@ fn load_or_build_sarit_index() -> &'static Vec<IndexEntry> {
     })
 }
 
+// メモリキャッシュ: MUKTABODHAインデックス
+static MUKTABODHA_INDEX_CACHE: OnceLock<Vec<IndexEntry>> = OnceLock::new();
+
+fn load_or_build_muktabodha_index() -> &'static Vec<IndexEntry> {
+    MUKTABODHA_INDEX_CACHE.get_or_init(|| {
+        let out = cache_dir().join("muktabodha-index.json");
+        if let Some(v) = load_index(&out) {
+            let missing = v
+                .iter()
+                .take(10)
+                .filter(|e| !Path::new(&e.path).exists())
+                .count();
+            if !v.is_empty() && missing == 0 {
+                return v;
+            }
+        }
+        ensure_muktabodha_dir();
+        let entries = build_muktabodha_index(&muktabodha_root());
+        let _ = save_index(&out, &entries);
+        entries
+    })
+}
+
 struct GretilHayCache {
     hay_norm: Vec<String>,
     hay_ws: Vec<String>,
@@ -742,6 +813,58 @@ fn sarit_title_hay_cache(entries: &[IndexEntry]) -> Option<&'static GretilHayCac
         return None;
     }
     let c = SARIT_TITLE_HAY_CACHE.get_or_init(|| {
+        let mut hay_norm: Vec<String> = Vec::with_capacity(entries.len());
+        let mut hay_ws: Vec<String> = Vec::with_capacity(entries.len());
+        let mut hay_fold: Vec<String> = Vec::with_capacity(entries.len());
+        for e in entries.iter() {
+            let meta_str = e
+                .meta
+                .as_ref()
+                .map(|m| {
+                    let mut s = String::new();
+                    for v in m.values() {
+                        if !s.is_empty() {
+                            s.push(' ');
+                        }
+                        s.push_str(v);
+                    }
+                    s
+                })
+                .unwrap_or_default();
+            let hay_all = format!("{} {} {}", e.title, e.id, meta_str);
+            hay_norm.push(daizo_core::text_utils::normalized(&hay_all));
+            hay_ws.push(daizo_core::text_utils::normalized_with_spaces(&hay_all));
+            hay_fold.push(daizo_core::text_utils::normalized_sanskrit(&hay_all));
+        }
+        GretilHayCache {
+            hay_norm,
+            hay_ws,
+            hay_fold,
+        }
+    });
+    if c.hay_norm.len() == entries.len()
+        && c.hay_ws.len() == entries.len()
+        && c.hay_fold.len() == entries.len()
+    {
+        Some(c)
+    } else {
+        None
+    }
+}
+
+static MUKTABODHA_TITLE_HAY_CACHE: OnceLock<GretilHayCache> = OnceLock::new();
+
+fn muktabodha_title_hay_cache(entries: &[IndexEntry]) -> Option<&'static GretilHayCache> {
+    if let Some(c) = MUKTABODHA_TITLE_HAY_CACHE.get() {
+        if c.hay_norm.len() == entries.len()
+            && c.hay_ws.len() == entries.len()
+            && c.hay_fold.len() == entries.len()
+        {
+            return Some(c);
+        }
+        return None;
+    }
+    let c = MUKTABODHA_TITLE_HAY_CACHE.get_or_init(|| {
         let mut hay_norm: Vec<String> = Vec::with_capacity(entries.len());
         let mut hay_ws: Vec<String> = Vec::with_capacity(entries.len());
         let mut hay_fold: Vec<String> = Vec::with_capacity(entries.len());
@@ -1203,6 +1326,113 @@ fn best_match_sarit<'a>(entries: &'a [IndexEntry], q: &str, limit: usize) -> Vec
         .collect()
 }
 
+fn best_match_muktabodha<'a>(
+    entries: &'a [IndexEntry],
+    q: &str,
+    limit: usize,
+) -> Vec<ScoredHit<'a>> {
+    // サンスクリット向け（IAST）として GRETIL と同じ方式でスコアリング。
+    // MUKTABODHA は .txt も混ざる想定だが、タイトル/ID/メタでマッチさせる。
+    let nq = normalized(q);
+    let nq_ws = daizo_core::text_utils::normalized_with_spaces(q);
+    let nq_nospace = nq_ws.replace(' ', "");
+    let nq_fold = daizo_core::text_utils::normalized_sanskrit(q);
+    let q_tokens: std::collections::HashSet<String> =
+        nq_ws.split_whitespace().map(|w| w.to_string()).collect();
+    let has_digit = q.chars().any(|c| c.is_ascii_digit());
+    let hay_cache = muktabodha_title_hay_cache(entries);
+
+    let mut top: Vec<(f32, &IndexEntry)> = Vec::with_capacity(limit.min(32));
+    for (i, e) in entries.iter().enumerate() {
+        let mut s = if let Some(cache) = hay_cache {
+            let hay = &cache.hay_norm[i];
+            let hay_ws = &cache.hay_ws[i];
+            let hay_fold = &cache.hay_fold[i];
+
+            let mut score = if hay.contains(&nq) {
+                1.0
+            } else {
+                let s_char = jaccard(hay, &nq);
+                let s_tok = if q_tokens.is_empty() {
+                    0.0
+                } else {
+                    let mut uniq: Vec<&str> = Vec::new();
+                    let mut inter = 0usize;
+                    for tok in hay_ws.split_whitespace() {
+                        if uniq.iter().any(|t| *t == tok) {
+                            continue;
+                        }
+                        if q_tokens.contains(tok) {
+                            inter += 1;
+                        }
+                        uniq.push(tok);
+                    }
+                    let sa_len = uniq.len();
+                    let sb_len = q_tokens.len();
+                    if sa_len == 0 || sb_len == 0 {
+                        0.0
+                    } else {
+                        let uni = (sa_len + sb_len).saturating_sub(inter);
+                        if uni == 0 {
+                            0.0
+                        } else {
+                            inter as f32 / uni as f32
+                        }
+                    }
+                };
+                s_char.max(s_tok).max(jaccard(hay_fold, &nq_fold))
+            };
+
+            if score < 0.95 {
+                let subseq = is_subsequence(hay, &nq)
+                    || is_subsequence(&nq, hay)
+                    || is_subsequence(hay_fold, &nq_fold);
+                if subseq {
+                    score = score.max(0.85);
+                }
+            }
+
+            let alias = e
+                .meta
+                .as_ref()
+                .and_then(|m| m.get("alias").map(|s| s.as_str()))
+                .unwrap_or("");
+            let nalias = daizo_core::text_utils::normalized_with_spaces(alias).replace(' ', "");
+            let nalias_fold = daizo_core::text_utils::normalized_sanskrit(alias);
+            if !nalias.is_empty() {
+                if nalias.split_whitespace().any(|a| a == nq_nospace)
+                    || nalias.contains(&nq_nospace)
+                    || (!nalias_fold.is_empty() && nalias_fold.contains(&nq_fold))
+                {
+                    score = score.max(0.95);
+                }
+            }
+
+            if has_digit && !nq_ws.is_empty() && hay_ws.contains(&nq_ws) {
+                score = (score + 0.05).min(1.0);
+            }
+            score
+        } else {
+            compute_match_score_sanskrit(e, q)
+        };
+
+        if let Some(meta) = &e.meta {
+            for k in ["author", "editor", "translator", "publisher"].iter() {
+                if let Some(v) = meta.get(*k) {
+                    let nv = normalized(v);
+                    if !nv.is_empty() && (nv.contains(&nq) || nq.contains(&nv)) {
+                        s = s.max(0.93);
+                    }
+                }
+            }
+        }
+        topk_insert(&mut top, (s, e), limit);
+    }
+    top.into_iter()
+        .map(|(s, e)| ScoredHit { entry: e, score: s })
+        .collect()
+}
+
 #[derive(Clone, Copy)]
 struct ResolveCrosswalk {
     key: &'static str,
@@ -1529,6 +1759,38 @@ fn resolve_title_candidates_sarit(
     out
 }
 
+fn resolve_title_candidates_muktabodha(
+    q: &str,
+    limit_per_source: usize,
+    min_score: f32,
+    prefer_source: Option<&str>,
+) -> Vec<(f32, serde_json::Value)> {
+    let idx = load_or_build_muktabodha_index();
+    let mut out: Vec<(f32, serde_json::Value)> = Vec::new();
+    for h in best_match_muktabodha(idx, q, limit_per_source) {
+        if h.score < min_score {
+            continue;
+        }
+        let bias = if prefer_source == Some("muktabodha") {
+            0.02
+        } else {
+            0.0
+        };
+        let v = json!({
+            "source": "muktabodha",
+            "id": &h.entry.id,
+            "title": &h.entry.title,
+            "score": h.score,
+            "path": &h.entry.path,
+            "meta": &h.entry.meta,
+            "fetch": {"tool": "muktabodha_fetch", "args": {"id": &h.entry.id}},
+            "resolvedBy": "title-index"
+        });
+        out.push((h.score + bias, v));
+    }
+    out
+}
+
 // jaccard and is_subsequence moved to daizo_core::text_utils
 
 // resolve_cbeta_path moved to daizo_core::path_resolver
@@ -1634,11 +1896,12 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                 "tipitaka": tipitaka_root().exists(),
                 "gretil": gretil_root().exists(),
                 "sarit": sarit_root().exists(),
+                "muktabodha": muktabodha_root().exists(),
             });
             let version_info = json!({
                 "version": VERSION,
                 "name": "daizo-mcp",
-                "description": "MCP server for Buddhist scripture retrieval (CBETA, Tipitaka, GRETIL, SARIT, SAT)",
+                "description": "MCP server for Buddhist scripture retrieval (CBETA, Tipitaka, GRETIL, SARIT, MUKTABODHA, SAT)",
                 "homepage": "https://github.com/sinryo/daizo-mcp",
                 "data_available": data_status,
                 "data_path": daizo_home().to_string_lossy(),
@@ -1653,6 +1916,7 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                     "Tipitaka Pāli Canon (パーリ聖典)",
                     "GRETIL Sanskrit Texts (梵語文献)",
                     "SARIT TEI P5 corpus",
+                    "MUKTABODHA Sanskrit library (IAST)",
                     "SAT Database search"
                 ]
             });
@@ -1782,6 +2046,7 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                         "tipitaka".to_string(),
                         "gretil".to_string(),
                         "sarit".to_string(),
+                        "muktabodha".to_string(),
                     ]
                 });
             let limit_per_source = args
@@ -1895,10 +2160,12 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                 let do_tipitaka = sources.iter().any(|s| s == "tipitaka");
                 let do_gretil = sources.iter().any(|s| s == "gretil");
                 let do_sarit = sources.iter().any(|s| s == "sarit");
+                let do_muktabodha = sources.iter().any(|s| s == "muktabodha");
                 let jobs = (do_cbeta as usize)
                     + (do_tipitaka as usize)
                     + (do_gretil as usize)
-                    + (do_sarit as usize);
+                    + (do_sarit as usize)
+                    + (do_muktabodha as usize);
                 if jobs >= 2 {
                     std::thread::scope(|scope| {
                         let h_cbeta = if do_cbeta {
@@ -1949,6 +2216,18 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                         } else {
                             None
                         };
+                        let h_muktabodha = if do_muktabodha {
+                            Some(scope.spawn(|| {
+                                resolve_title_candidates_muktabodha(
+                                    q,
+                                    limit_per_source,
+                                    min_score,
+                                    prefer,
+                                )
+                            }))
+                        } else {
+                            None
+                        };
                         if let Some(h) = h_cbeta {
                             cands_scored.extend(h.join().unwrap_or_default());
                         }
@@ -1959,6 +2238,9 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                             cands_scored.extend(h.join().unwrap_or_default());
                         }
                         if let Some(h) = h_sarit {
+                            cands_scored.extend(h.join().unwrap_or_default());
+                        }
+                        if let Some(h) = h_muktabodha {
                             cands_scored.extend(h.join().unwrap_or_default());
                         }
                     });
@@ -1989,6 +2271,14 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                     }
                     if do_sarit {
                         cands_scored.extend(resolve_title_candidates_sarit(
+                            q,
+                            limit_per_source,
+                            min_score,
+                            prefer,
+                        ));
+                    }
+                    if do_muktabodha {
+                        cands_scored.extend(resolve_title_candidates_muktabodha(
                             q,
                             limit_per_source,
                             min_score,
@@ -4776,6 +5066,393 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                     meta["autoFetched"] = json!(fetched);
                 }
             }
+            if content_items.len() > 1 {
+                let mut joined = String::new();
+                for item in content_items.iter() {
+                    if let Some(t) = item.get("text").and_then(|v| v.as_str()) {
+                        if !joined.is_empty() {
+                            joined.push_str("\n\n");
+                        }
+                        joined.push_str(t);
+                    }
+                }
+                content_items = vec![json!({"type":"text","text": joined})];
+            }
+            return json!({"jsonrpc":"2.0","id": id, "result": { "content": content_items, "_meta": meta }});
+        }
+        "muktabodha_title_search" => {
+            ensure_muktabodha_dir();
+            let q = args
+                .get("query")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+            let idx = load_or_build_muktabodha_index();
+            let hits = best_match_muktabodha(idx, &q, limit);
+            let summary = hits
+                .iter()
+                .enumerate()
+                .map(|(i, h)| format!("{}. {}  {}", i + 1, h.entry.id, h.entry.title))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let results: Vec<_> = hits
+                .iter()
+                .map(|h| {
+                    json!({
+                        "id": h.entry.id,
+                        "title": h.entry.title,
+                        "path": h.entry.path,
+                        "score": h.score,
+                        "meta": h.entry.meta
+                    })
+                })
+                .collect();
+            let meta = json!({ "count": results.len(), "results": results });
+            return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary }], "_meta": meta }});
+        }
+        "muktabodha_fetch" => {
+            ensure_muktabodha_dir();
+            let mut matched_id: Option<String> = None;
+            let mut matched_title: Option<String> = None;
+            let mut matched_score: Option<f32> = None;
+            let mut path: PathBuf = PathBuf::new();
+
+            if let Some(id_str) = args.get("id").and_then(|v| v.as_str()) {
+                if let Some(p) = resolve_muktabodha_path_direct(id_str) {
+                    path = p.clone();
+                    matched_id = Some(id_str.to_string());
+                    if let Some(idx) = MUKTABODHA_INDEX_CACHE.get() {
+                        if let Some(e) = idx.iter().find(|e| Path::new(&e.path) == &p) {
+                            matched_title = Some(e.title.clone());
+                        }
+                    }
+                } else {
+                    let idx = load_or_build_muktabodha_index();
+                    if let Some(p) = resolve_muktabodha_by_id(&idx, id_str) {
+                        matched_id = Some(
+                            Path::new(&p)
+                                .file_stem()
+                                .map(|s| s.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| id_str.to_string()),
+                        );
+                        if let Some(e) = idx.iter().find(|e| Path::new(&e.path) == &p) {
+                            matched_title = Some(e.title.clone());
+                        }
+                        path = p;
+                    }
+                }
+            } else if let Some(q) = args.get("query").and_then(|v| v.as_str()) {
+                let idx = load_or_build_muktabodha_index();
+                if let Some(hit) = best_match_muktabodha(idx, q, 1).into_iter().next() {
+                    matched_title = Some(hit.entry.title.clone());
+                    matched_score = Some(hit.score);
+                    matched_id = Some(hit.entry.id.clone());
+                    path = PathBuf::from(&hit.entry.path);
+                }
+            }
+
+            if path.as_os_str().is_empty() {
+                return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": "not found"}] }});
+            }
+
+            let bytes = fs::read(&path).unwrap_or_default();
+            let xml = decode_xml_bytes(&bytes);
+            let include_notes = args
+                .get("includeNotes")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let is_xml = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.eq_ignore_ascii_case("xml"))
+                .unwrap_or(false);
+
+            let (text, extraction_method) =
+                if let Some(line_num) = args.get("lineNumber").and_then(|v| v.as_u64()) {
+                    let before = args
+                        .get("contextBefore")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(
+                            args.get("contextLines")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(10),
+                        ) as usize;
+                    let after = args.get("contextAfter").and_then(|v| v.as_u64()).unwrap_or(
+                        args.get("contextLines")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(100),
+                    ) as usize;
+                    let context_text = daizo_core::extract_xml_around_line_asymmetric(
+                        &xml,
+                        line_num as usize,
+                        before,
+                        after,
+                    );
+                    (
+                        context_text,
+                        format!("line-context-{}-{}-{}", line_num, before, after),
+                    )
+                } else if is_xml {
+                    (
+                        extract_text_opts(&xml, include_notes),
+                        "full-xml".to_string(),
+                    )
+                } else {
+                    (xml.clone(), "full-txt".to_string())
+                };
+
+            let full_flag = args.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
+            let mut sliced = if full_flag {
+                text.clone()
+            } else {
+                slice_text(&text, &args)
+            };
+
+            let mut highlight_count = 0usize;
+            let mut highlight_positions: Vec<serde_json::Value> = Vec::new();
+            if let Some(hpat) = args.get("highlight").and_then(|v| v.as_str()) {
+                let use_re = args
+                    .get("highlightRegex")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let hpre = args
+                    .get("highlightPrefix")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(">>> ");
+                let hsuf = args
+                    .get("highlightSuffix")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(" <<<");
+                let (decorated, count, positions) =
+                    daizo_core::text_utils::highlight_text(&sliced, hpat, use_re, hpre, hsuf);
+                sliced = decorated;
+                highlight_count = count;
+                highlight_positions = positions
+                    .into_iter()
+                    .map(|p| json!({"startChar": p.start_char, "endChar": p.end_char}))
+                    .collect();
+            }
+
+            let heads = if is_xml {
+                list_heads_generic(&xml)
+            } else {
+                Vec::new()
+            };
+            let headings_limit = args
+                .get("headingsLimit")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(20) as usize;
+            let meta = json!({
+                "totalLength": text.chars().count(),
+                "sourcePath": path.to_string_lossy(),
+                "extractionMethod": extraction_method,
+                "headingsTotal": heads.len(),
+                "headingsPreview": heads.into_iter().take(headings_limit).collect::<Vec<_>>(),
+                "matchedId": matched_id,
+                "matchedTitle": matched_title,
+                "matchedScore": matched_score,
+                "highlighted": if highlight_count > 0 { Some(highlight_count) } else { None::<usize> },
+                "highlightPositions": if !highlight_positions.is_empty() { Some(highlight_positions) } else { None::<Vec<serde_json::Value>> },
+            });
+            return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": sliced}], "_meta": meta }});
+        }
+        "muktabodha_search" => {
+            let q_raw = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            let looks_like_regex = q_raw.chars().any(|c| ".+*?[](){}|\\".contains(c));
+            let q = if q_raw.chars().any(|c| c.is_whitespace()) && !looks_like_regex {
+                to_whitespace_fuzzy_literal(q_raw)
+            } else {
+                q_raw.to_string()
+            };
+            let max_results = args
+                .get("maxResults")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(20) as usize;
+            let max_matches_per_file = args
+                .get("maxMatchesPerFile")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(5) as usize;
+
+            ensure_muktabodha_dir();
+            let results =
+                muktabodha_grep(&muktabodha_root(), &q, max_results, max_matches_per_file);
+
+            let mut summary = format!(
+                "Found {} files with matches for '{}':\n\n",
+                results.len(),
+                q_raw
+            );
+            for (i, result) in results.iter().enumerate() {
+                summary.push_str(&format!(
+                    "{}. {} ({})\n",
+                    i + 1,
+                    result.title,
+                    result.file_id
+                ));
+                summary.push_str(&format!(
+                    "   {} matches, {}\n",
+                    result.total_matches,
+                    result
+                        .fetch_hints
+                        .total_content_size
+                        .as_deref()
+                        .unwrap_or("unknown size")
+                ));
+                for (j, m) in result.matches.iter().enumerate().take(2) {
+                    summary.push_str(&format!(
+                        "   Match {}: ...{}...\n",
+                        j + 1,
+                        m.context.chars().take(100).collect::<String>()
+                    ));
+                }
+                if result.matches.len() > 2 {
+                    summary.push_str(&format!(
+                        "   ... and {} more matches\n",
+                        result.matches.len() - 2
+                    ));
+                }
+                summary.push('\n');
+            }
+            let hl_regex = looks_like_regex || (q != q_raw);
+            let mut fetch_suggestions: Vec<serde_json::Value> = Vec::new();
+            if let Some(r) = results.first() {
+                if let Some(m) = r.matches.first() {
+                    if let Some(ln) = m.line_number {
+                        fetch_suggestions.push(json!({
+                            "tool": "muktabodha_fetch",
+                            "args": {"id": r.file_id, "lineNumber": ln, "contextBefore": 1, "contextAfter": 3, "highlight": q, "highlightRegex": hl_regex},
+                            "mode": "low-cost"
+                        }));
+                    }
+                }
+            }
+            let mut meta = json!({
+                "searchPattern": q,
+                "totalFiles": results.len(),
+                "results": results,
+                "hint": "Use muktabodha_fetch (id + lineNumber) for low-cost context; muktabodha_pipeline with autoFetch=false to summarize",
+                "fetchSuggestions": fetch_suggestions
+            });
+            meta["pipelineHint"] = json!({
+                "tool": "muktabodha_pipeline",
+                "args": {"query": q, "autoFetch": false, "maxResults": 5, "maxMatchesPerFile": 1, "includeMatchLine": true }
+            });
+            return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary}], "_meta": meta }});
+        }
+        "muktabodha_pipeline" => {
+            let q_raw = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            let looks_like_regex = q_raw.chars().any(|c| ".+*?[](){}|\\".contains(c));
+            let q = if q_raw.chars().any(|c| c.is_whitespace()) && !looks_like_regex {
+                to_whitespace_fuzzy_literal(q_raw)
+            } else {
+                q_raw.to_string()
+            };
+            let context_before = args
+                .get("contextBefore")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(10) as usize;
+            let context_after = args
+                .get("contextAfter")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(100) as usize;
+            let max_results = args
+                .get("maxResults")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(10) as usize;
+            let max_matches_per_file = args
+                .get("maxMatchesPerFile")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(3) as usize;
+            let include_match_line = args
+                .get("includeMatchLine")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+
+            ensure_muktabodha_dir();
+            let results =
+                muktabodha_grep(&muktabodha_root(), &q, max_results, max_matches_per_file);
+            let mut content_items: Vec<serde_json::Value> = Vec::new();
+            let mut meta =
+                json!({ "searchPattern": q, "totalFiles": results.len(), "results": results });
+            let summary = format!("Found {} files with matches for '{}'", results.len(), q);
+            content_items.push(json!({"type":"text","text": summary}));
+
+            let force_no_auto = std::env::var("DAIZO_FORCE_NO_AUTO").ok().as_deref() == Some("1");
+            let mut auto_fetch = args
+                .get("autoFetch")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if force_no_auto && auto_fetch {
+                auto_fetch = false;
+                meta["autoFetchOverridden"] = json!(true);
+            }
+            if auto_fetch {
+                let full = args.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
+                let include_notes = args
+                    .get("includeNotes")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let tf = args
+                    .get("autoFetchFiles")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(1) as usize;
+                let tf = tf.min(results.len());
+                let mut fetched: Vec<serde_json::Value> = Vec::new();
+                for r in results.iter().take(tf) {
+                    let per_file_limit = args
+                        .get("autoFetchMatches")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(max_matches_per_file as u64)
+                        as usize;
+                    let bytes = fs::read(&r.file_path).unwrap_or_default();
+                    let xml = decode_xml_bytes(&bytes);
+                    let is_xml = r.file_path.to_lowercase().ends_with(".xml");
+                    if full {
+                        let text = if is_xml {
+                            extract_text_opts(&xml, include_notes)
+                        } else {
+                            xml.clone()
+                        };
+                        content_items.push(json!({"type":"text","text": text}));
+                        fetched.push(json!({"id": r.file_id, "full": true}));
+                    } else {
+                        let mut combined = String::new();
+                        for m in r.matches.iter().take(per_file_limit) {
+                            if let Some(ln) = m.line_number {
+                                let ctx = daizo_core::extract_xml_around_line_asymmetric(
+                                    &xml,
+                                    ln,
+                                    context_before,
+                                    context_after,
+                                );
+                                if !combined.is_empty() {
+                                    combined.push_str("\n\n---\n\n");
+                                }
+                                combined.push_str(&format!(
+                                    "# {}{}\n\n{}",
+                                    r.file_id,
+                                    if include_match_line {
+                                        format!(" (line {})", ln)
+                                    } else {
+                                        String::new()
+                                    },
+                                    ctx
+                                ));
+                            }
+                        }
+                        if !combined.is_empty() {
+                            content_items.push(json!({"type":"text","text": combined}));
+                            fetched.push(json!({"id": r.file_id, "full": false}));
+                        }
+                    }
+                }
+                if !fetched.is_empty() {
+                    meta["autoFetched"] = json!(fetched);
+                }
+            }
+
             if content_items.len() > 1 {
                 let mut joined = String::new();
                 for item in content_items.iter() {
