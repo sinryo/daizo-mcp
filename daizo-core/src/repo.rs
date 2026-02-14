@@ -109,6 +109,27 @@ pub fn ensure_cbeta_data_at(root: &Path) -> bool {
     )
 }
 
+pub fn ensure_sarit_data_at(root: &Path) -> bool {
+    if root.exists() {
+        return true;
+    }
+    if let Some(parent) = root.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    log(&format!("cloning SARIT corpus -> {}", root.display()));
+    run(
+        "git",
+        &[
+            "clone",
+            "--depth",
+            "1",
+            "https://github.com/sarit/SARIT-corpus.git",
+            &root.to_string_lossy(),
+        ],
+        None,
+    )
+}
+
 pub fn clone_tipitaka_sparse(target_dir: &Path) -> bool {
     log(&format!(
         "cloning Tipitaka (romn only) -> {}",

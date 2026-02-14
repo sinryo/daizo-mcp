@@ -1,15 +1,15 @@
 # daizo-mcp
 
-An MCP (Model Context Protocol) server plus CLI for fast Buddhist text search and retrieval. Supports CBETA (Chinese), Pāli Tipitaka (romanized), GRETIL (Sanskrit TEI), SAT (online), and Tibetan full-text search via online corpora (BUDA/BDRC, Adarshah). Implemented in Rust for speed and reliability.
+An MCP (Model Context Protocol) server plus CLI for fast Buddhist text search and retrieval. Supports CBETA (Chinese), Pāli Tipitaka (romanized), GRETIL (Sanskrit TEI), SARIT (TEI P5), SAT (online), and Tibetan full-text search via online corpora (BUDA/BDRC, Adarshah). Implemented in Rust for speed and reliability.
 
 See also: [日本語 README](README.ja.md) | [繁體中文 README](README.zh-TW.md)
 
 ## Highlights
 
 - **Direct ID Access**: Instant retrieval when you know the text ID (fastest path!)
-- Fast regex/content search with line numbers (CBETA/Tipitaka/GRETIL)
+- Fast regex/content search with line numbers (CBETA/Tipitaka/GRETIL/SARIT)
 - CBETA search works with modern forms too (new/old CJK variants are normalized so Taisho texts still hit)
-- Title search across CBETA, Tipitaka, and GRETIL indices
+- Title search across CBETA, Tipitaka, GRETIL, and SARIT indices
 - Precise context fetching by line number or character range
 - Optional SAT online search with smart caching
 - Tibetan online full-text search (BUDA/BDRC + Adarshah), with EWTS/Wylie best-effort auto-conversion
@@ -187,7 +187,7 @@ Tip: Control number of suggestions via `DAIZO_HINT_TOP` (default 1).
 ## Directories and Env
 
 - `DAIZO_DIR` (default: `~/.daizo`)
-  - data: `xml-p5/`, `tipitaka-xml/romn/`, `GRETIL/`
+  - data: `xml-p5/`, `tipitaka-xml/romn/`, `GRETIL/`, `SARIT-corpus/`
   - cache: `cache/`
   - binaries: `bin/`
 - `DAIZO_DEBUG=1` enables minimal MCP debug log

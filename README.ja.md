@@ -1,15 +1,15 @@
 # daizo-mcp
 
-CBETA（漢文）、パーリ三蔵（ローマ字）、GRETIL（サンスクリット TEI）、SAT（オンライン）に加え、チベット大蔵経系のオンライン全文検索（BUDA/BDRC・Adarshah）にも対応した、高速な仏教テキスト検索・取得のための MCP サーバーおよび CLI です。Rust で実装し、高速・堅牢に動作します。
+CBETA（漢文）、パーリ三蔵（ローマ字）、GRETIL（サンスクリット TEI）、SARIT（TEI P5）、SAT（オンライン）に加え、チベット大蔵経系のオンライン全文検索（BUDA/BDRC・Adarshah）にも対応した、高速な仏教テキスト検索・取得のための MCP サーバーおよび CLI です。Rust で実装し、高速・堅牢に動作します。
 
 関連: [English README](README.md) | [繁體中文 README](README.zh-TW.md)
 
 ## 特長
 
 - **ダイレクトIDアクセス**: テキストIDが分かっていれば即座に取得（最速！）
-- CBETA / Tipitaka / GRETIL に対する高速な正規表現検索（行番号つき）
+- CBETA / Tipitaka / GRETIL / SARIT に対する高速な正規表現検索（行番号つき）
 - CBETA検索は新字体など“現代の表記”でもヒットするよう正規化（旧字体・簡繁などの揺れを吸収）
-- タイトル検索（CBETA / Tipitaka / GRETIL）
+- タイトル検索（CBETA / Tipitaka / GRETIL / SARIT）
 - 行番号や文字位置での前後コンテキスト取得
 - SAT オンライン検索（スマートキャッシュ付き）
 - チベット語のオンライン全文検索（BUDA/BDRC + Adarshah、EWTS/Wylieの簡易自動変換つき）
@@ -187,7 +187,7 @@ Tips: `DAIZO_HINT_TOP` でサジェスト件数を制御（既定 1）。
 ## ディレクトリと環境変数
 
 - `DAIZO_DIR`（既定: `~/.daizo`）
-  - データ: `xml-p5/`, `tipitaka-xml/romn/`, `GRETIL/`
+  - データ: `xml-p5/`, `tipitaka-xml/romn/`, `GRETIL/`, `SARIT-corpus/`
   - キャッシュ: `cache/`
   - バイナリ: `bin/`
 - `DAIZO_DEBUG=1` で簡易 MCP デバッグログ

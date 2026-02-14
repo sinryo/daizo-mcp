@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 use unicode_normalization::UnicodeNormalization;
 
 use encoding_rs;
@@ -84,6 +84,49 @@ fn collect_xml_paths(root: &Path, filter: impl Fn(&Path, &str) -> bool + Sync) -
     // Deterministic ordering; avoid run-to-run variation when callers later apply limits.
     out.sort();
     out
+}
+
+fn collect_xml_paths_cached(
+    cache: &'static OnceLock<Mutex<HashMap<PathBuf, Arc<Vec<PathBuf>>>>>,
+    root: &Path,
+    filter: impl Fn(&Path, &str) -> bool + Sync,
+) -> Arc<Vec<PathBuf>> {
+    let key = root.to_path_buf();
+    let m = cache.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(v) = m.lock().unwrap().get(&key).cloned() {
+        return v;
+    }
+    // Build outside the lock; walking the tree can be expensive.
+    let paths = collect_xml_paths(root, filter);
+    let arc = Arc::new(paths);
+    m.lock().unwrap().insert(key, arc.clone());
+    arc
+}
+
+static XML_PATHS_ALL_CACHE: OnceLock<Mutex<HashMap<PathBuf, Arc<Vec<PathBuf>>>>> = OnceLock::new();
+static CBETA_XML_PATHS_EXCLUDE_T_CACHE: OnceLock<Mutex<HashMap<PathBuf, Arc<Vec<PathBuf>>>>> =
+    OnceLock::new();
+static TIPITAKA_XML_PATHS_CACHE: OnceLock<Mutex<HashMap<PathBuf, Arc<Vec<PathBuf>>>>> =
+    OnceLock::new();
+static SARIT_XML_PATHS_CACHE: OnceLock<Mutex<HashMap<PathBuf, Arc<Vec<PathBuf>>>>> =
+    OnceLock::new();
+
+fn is_sarit_xml(path: &Path, name: &str) -> bool {
+    if !name.ends_with(".xml") {
+        return false;
+    }
+    // Exclude non-text artifacts / schemas / tool files in the SARIT repo.
+    let p = path.to_string_lossy();
+    for bad in ["/.git/", "/out/", "/schemas/", "/tools/"].iter() {
+        if p.contains(bad) {
+            return false;
+        }
+    }
+    // Exclude the header template file(s) if present.
+    if name.contains("tei-header-template") || name.starts_with("00-sarit-tei-header") {
+        return false;
+    }
+    true
 }
 
 pub fn build_index(root: &Path, glob_hint: Option<&str>) -> Vec<IndexEntry> {
@@ -222,6 +265,162 @@ pub fn build_index(root: &Path, glob_hint: Option<&str>) -> Vec<IndexEntry> {
                 title,
                 path: abs.to_string_lossy().to_string(),
                 meta: None,
+            })
+        })
+        .collect()
+}
+
+/// SARIT 用: リポジトリ内の TEI P5 テキストをインデックス化（スキーマ/生成物を除外）。
+/// ID はファイル stem を採用（xml:id は揺れがあるため）。
+pub fn build_sarit_index(root: &Path) -> Vec<IndexEntry> {
+    let paths = collect_xml_paths(root, |path, name| is_sarit_xml(path, name));
+
+    paths
+        .par_iter()
+        .filter_map(|p| {
+            let f = File::open(p).ok()?;
+            let mut reader = Reader::from_reader(BufReader::new(f));
+            reader.config_mut().trim_text_start = true;
+            reader.config_mut().trim_text_end = true;
+            let mut buf = Vec::new();
+
+            let mut xml_id: Option<String> = None;
+            let mut titles: Vec<(bool, String)> = Vec::new(); // (is_main, text)
+            let mut author: Option<String> = None;
+            let mut editor: Option<String> = None;
+
+            let mut path_stack: Vec<Vec<u8>> = Vec::new();
+            let mut in_title = false;
+            let mut cur_title_is_main = false;
+            let mut title_buf = String::new();
+            let mut in_author = false;
+            let mut author_buf = String::new();
+            let mut in_editor = false;
+            let mut editor_buf = String::new();
+
+            let mut events = 0usize;
+            let max_events = 80_000usize;
+
+            loop {
+                if events >= max_events {
+                    break;
+                }
+                match reader.read_event_into(&mut buf) {
+                    Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                        let name_owned = e.name().as_ref().to_owned();
+                        let lname = local_name(&name_owned).to_vec();
+                        if xml_id.is_none() {
+                            if let Some(v) = attr_val(&e, b"xml:id") {
+                                xml_id = Some(v.to_string());
+                            }
+                        }
+                        path_stack.push(lname.clone());
+
+                        if lname.as_slice() == b"title"
+                            && path_stack.iter().any(|n| n.as_slice() == b"titleStmt")
+                            && path_stack.iter().any(|n| n.as_slice() == b"teiHeader")
+                        {
+                            in_title = true;
+                            title_buf.clear();
+                            cur_title_is_main = attr_val(&e, b"type")
+                                .map(|v| v.to_ascii_lowercase().contains("main"))
+                                .unwrap_or(false);
+                        }
+                        if lname.as_slice() == b"author"
+                            && path_stack.iter().any(|n| n.as_slice() == b"titleStmt")
+                            && author.is_none()
+                        {
+                            in_author = true;
+                            author_buf.clear();
+                        }
+                        if lname.as_slice() == b"editor"
+                            && path_stack.iter().any(|n| n.as_slice() == b"titleStmt")
+                            && editor.is_none()
+                        {
+                            in_editor = true;
+                            editor_buf.clear();
+                        }
+                    }
+                    Ok(Event::End(e)) => {
+                        let name_owned = e.name().as_ref().to_owned();
+                        let lname = local_name(&name_owned);
+                        if lname == b"title" && in_title {
+                            let t = title_buf.split_whitespace().collect::<Vec<_>>().join(" ");
+                            if !t.is_empty() {
+                                titles.push((cur_title_is_main, t));
+                            }
+                            in_title = false;
+                            cur_title_is_main = false;
+                            title_buf.clear();
+                        }
+                        if lname == b"author" && in_author {
+                            let t = author_buf.split_whitespace().collect::<Vec<_>>().join(" ");
+                            if !t.is_empty() {
+                                author = Some(t);
+                            }
+                            in_author = false;
+                            author_buf.clear();
+                        }
+                        if lname == b"editor" && in_editor {
+                            let t = editor_buf.split_whitespace().collect::<Vec<_>>().join(" ");
+                            if !t.is_empty() {
+                                editor = Some(t);
+                            }
+                            in_editor = false;
+                            editor_buf.clear();
+                        }
+                        if lname == b"teiHeader" && !titles.is_empty() {
+                            break;
+                        }
+                        path_stack.pop();
+                    }
+                    Ok(Event::Text(t)) => {
+                        let tx = t.decode().unwrap_or_default();
+                        if in_title {
+                            title_buf.push_str(&tx);
+                        }
+                        if in_author {
+                            author_buf.push_str(&tx);
+                        }
+                        if in_editor {
+                            editor_buf.push_str(&tx);
+                        }
+                    }
+                    Ok(Event::Eof) => break,
+                    Err(_) => break,
+                    _ => {}
+                }
+                buf.clear();
+                events += 1;
+            }
+
+            let id = stem_from(p);
+            let title = titles
+                .iter()
+                .find(|(is_main, _)| *is_main)
+                .or_else(|| titles.first())
+                .map(|(_, s)| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| id.clone());
+            let abs = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+
+            let mut meta: BTreeMap<String, String> = BTreeMap::new();
+            if let Some(x) = xml_id {
+                meta.insert("xmlId".to_string(), x);
+            }
+            if let Some(a) = author {
+                meta.insert("author".to_string(), a);
+            }
+            if let Some(ed) = editor {
+                meta.insert("editor".to_string(), ed);
+            }
+            meta.insert("indexVersion".to_string(), "sarit_index_v1".to_string());
+
+            Some(IndexEntry {
+                id,
+                title,
+                path: abs.to_string_lossy().to_string(),
+                meta: Some(meta),
             })
         })
         .collect()
@@ -968,7 +1167,7 @@ pub fn build_cbeta_index(root: &Path) -> Vec<IndexEntry> {
 // Tipitaka 用: teiHeader が空な場合が多いため、<p rend="..."> 系から書誌情報を抽出してタイトルを構築
 pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
     // 走査: root 配下の .xml で .toc.xml は除外 (rootは既にromnディレクトリを指している)
-    let paths = collect_xml_paths(root, |_, name| {
+    let paths = collect_xml_paths_cached(&TIPITAKA_XML_PATHS_CACHE, root, |_, name| {
         name.ends_with(".xml")
             && !name.contains("toc")
             && !name.contains("sitemap")
@@ -1026,11 +1225,14 @@ pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
             let mut heads: Vec<String> = Vec::new();
             let mut div_info: Vec<(String, String)> = Vec::new(); // (n, type) pairs
 
-            // 対象キー（拡張） - gathalastも含める
-            let wanted_p = ["nikaya", "title", "subhead", "subsubhead", "gathalast"];
+            // 対象キー（軽量）: タイトル/別名生成に必要な最小限のみ
+            // NOTE: gathalast は本文級に膨らみうるためインデックスには含めない（速度最優先）。
+            const MAX_VALUES_PER_KEY: usize = 8;
+            const MAX_DIV_INFO: usize = 64;
+            let wanted_p = ["nikaya", "title", "subhead", "subsubhead"];
             let wanted_head = ["book", "chapter"];
             let mut events_read = 0usize;
-            let max_events = 50_000usize; // ファイル全体を読むために大きく設定
+            let max_events = 12_000usize; // 先頭付近の書誌情報だけで十分なケースが大半
 
             loop {
                 match reader.read_event_into(&mut buf) {
@@ -1051,7 +1253,9 @@ pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
                             if let (Some(n), Some(type_val)) =
                                 (attr_val(&e, b"n"), attr_val(&e, b"type"))
                             {
-                                div_info.push((n.to_string(), type_val.to_string()));
+                                if div_info.len() < MAX_DIV_INFO {
+                                    div_info.push((n.to_string(), type_val.to_string()));
+                                }
                             }
                         }
                     }
@@ -1066,7 +1270,7 @@ pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
                                 if !val.is_empty() && wanted_p.contains(&key.as_str()) {
                                     let values = fields.entry(key).or_insert_with(Vec::new);
                                     // 重複チェック: 同じ文字列が既に存在しない場合のみ追加
-                                    if !values.contains(&val) {
+                                    if values.len() < MAX_VALUES_PER_KEY && !values.contains(&val) {
                                         values.push(val);
                                     }
                                 }
@@ -1083,7 +1287,9 @@ pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
                                     if wanted_head.contains(&key.as_str()) {
                                         let values = fields.entry(key).or_insert_with(Vec::new);
                                         // 重複チェック: 同じ文字列が既に存在しない場合のみ追加
-                                        if !values.contains(&val) {
+                                        if values.len() < MAX_VALUES_PER_KEY
+                                            && !values.contains(&val)
+                                        {
                                             values.push(val.clone());
                                         }
                                     }
@@ -1131,7 +1337,6 @@ pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
                 "subhead",
                 "subsubhead",
                 "chapter",
-                "gathalast",
             ];
             let mut parts: Vec<String> = Vec::new();
             for k in parts_order.iter() {
@@ -1157,18 +1362,31 @@ pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
 
             // フィールド値をメタデータに格納
             for (key, values) in fields.iter() {
-                if values.len() == 1 {
-                    // 単一値の場合
-                    meta_map.insert(key.clone(), values[0].clone());
-                } else if values.len() > 1 {
-                    // 複数値の場合
-                    meta_map.insert(key.clone(), values.join(" | "));
-                    // 個別のエントリも作成
-                    for (i, value) in values.iter().enumerate() {
-                        meta_map.insert(format!("{}_{}", key, i + 1), value.clone());
-                    }
+                if values.is_empty() {
+                    continue;
                 }
+                // 大量の本文級フィールドをインデックスに溜めない（速度/サイズ優先）。
+                // 必要十分な範囲だけを join する（values 自体も上限あり）。
+                meta_map.insert(key.clone(), values.join(" | "));
             }
+
+            // index versioning (invalidate old heavy caches)
+            meta_map.insert("indexVersion".to_string(), "tipitaka_index_v2".to_string());
+
+            // headsPreview は常にキーを持たせ、MCP側のキャッシュ妥当性チェックを安定させる
+            meta_map.insert(
+                "headsPreview".to_string(),
+                if heads.is_empty() {
+                    String::new()
+                } else {
+                    heads
+                        .iter()
+                        .take(10)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(" | ")
+                },
+            );
 
             // div情報をメタデータに追加
             if !div_info.is_empty() {
@@ -1279,15 +1497,6 @@ pub fn build_tipitaka_index(root: &Path) -> Vec<IndexEntry> {
                 meta_map.insert("alias_prefix".to_string(), prefix.to_string());
             }
             if !heads.is_empty() {
-                meta_map.insert(
-                    "headsPreview".to_string(),
-                    heads
-                        .iter()
-                        .take(10)
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(" | "),
-                );
                 // add alias variants from heads and title
                 let mut alias_ext: Vec<String> = Vec::new();
                 for s in heads.iter().take(6) {
@@ -2369,12 +2578,22 @@ pub fn cbeta_grep(
     max_results: usize,
     max_matches_per_file: usize,
 ) -> Vec<GrepResult> {
+    // Build ripgrep matcher once (case-insensitive)
+    let matcher = match RegexMatcherBuilder::new()
+        .case_insensitive(true)
+        .multi_line(true)
+        .build(query)
+    {
+        Ok(m) => m,
+        Err(_) => return Vec::new(),
+    };
+
     // 1. まずTフォルダから優先的に検索
     let t_folder = root.join("T");
     let mut all_results = Vec::new();
 
     if t_folder.exists() {
-        let t_results = cbeta_grep_internal(&t_folder, query, max_results, max_matches_per_file);
+        let t_results = cbeta_grep_internal(&t_folder, &matcher, max_results, max_matches_per_file);
         all_results.extend(t_results);
     }
 
@@ -2382,7 +2601,7 @@ pub fn cbeta_grep(
     if all_results.len() < max_results {
         let remaining_limit = max_results - all_results.len();
         let other_results =
-            cbeta_grep_internal_exclude_t(root, query, remaining_limit, max_matches_per_file);
+            cbeta_grep_internal_exclude_t(root, &matcher, remaining_limit, max_matches_per_file);
         all_results.extend(other_results);
     }
 
@@ -2438,8 +2657,7 @@ fn ripgrep_search_file(
     matcher: &grep_regex::RegexMatcher,
     max_matches: usize,
 ) -> Option<Vec<RgMatch>> {
-    let matches = Mutex::new(Vec::new());
-    let match_count = std::sync::atomic::AtomicUsize::new(0);
+    let mut matches: Vec<RgMatch> = Vec::new();
 
     // Use memory-mapped I/O for faster file access
     let mut searcher = SearcherBuilder::new()
@@ -2453,51 +2671,33 @@ fn ripgrep_search_file(
         path,
         UTF8(|line_num, line| {
             // Early exit if we have enough matches
-            if match_count.load(std::sync::atomic::Ordering::Relaxed) >= max_matches {
+            if matches.len() >= max_matches {
                 return Ok(false); // Stop searching
             }
 
-            let mut guard = matches.lock().unwrap();
-            guard.push(RgMatch {
+            matches.push(RgMatch {
                 line_number: line_num,
                 line_content: line.trim_end().to_string(),
             });
-            match_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Ok(true)
         }),
     );
 
     match result {
-        Ok(_) => {
-            let guard = matches.lock().unwrap();
-            if guard.is_empty() {
-                None
-            } else {
-                Some(guard.clone())
-            }
-        }
+        Ok(_) => (!matches.is_empty()).then_some(matches),
         Err(_) => None,
     }
 }
 
 fn cbeta_grep_internal(
     root: &Path,
-    query: &str,
+    matcher: &grep_regex::RegexMatcher,
     max_results: usize,
     max_matches_per_file: usize,
 ) -> Vec<GrepResult> {
-    // Build ripgrep matcher (case-insensitive)
-    let matcher = match RegexMatcherBuilder::new()
-        .case_insensitive(true)
-        .multi_line(true)
-        .build(query)
-    {
-        Ok(m) => m,
-        Err(_) => return Vec::new(),
-    };
-
     // Collect XML file paths using ignore crate
-    let paths = collect_xml_paths(root, |_, name| name.ends_with(".xml"));
+    let paths =
+        collect_xml_paths_cached(&XML_PATHS_ALL_CACHE, root, |_, name| name.ends_with(".xml"));
 
     // Search files in parallel using ripgrep
     let mut results: Vec<GrepResult> = paths
@@ -2563,22 +2763,12 @@ fn cbeta_grep_internal(
 
 fn cbeta_grep_internal_exclude_t(
     root: &Path,
-    query: &str,
+    matcher: &grep_regex::RegexMatcher,
     max_results: usize,
     max_matches_per_file: usize,
 ) -> Vec<GrepResult> {
-    // Build ripgrep matcher (case-insensitive)
-    let matcher = match RegexMatcherBuilder::new()
-        .case_insensitive(true)
-        .multi_line(true)
-        .build(query)
-    {
-        Ok(m) => m,
-        Err(_) => return Vec::new(),
-    };
-
     // Collect XML file paths excluding /T/ folder using ignore crate
-    let paths = collect_xml_paths(root, |path, name| {
+    let paths = collect_xml_paths_cached(&CBETA_XML_PATHS_EXCLUDE_T_CACHE, root, |path, name| {
         name.ends_with(".xml") && !path.to_string_lossy().contains("/T/")
     });
 
@@ -2701,7 +2891,7 @@ pub fn tipitaka_grep(
     };
 
     // Collect XML file paths using ignore crate
-    let paths = collect_xml_paths(root, |_, name| {
+    let paths = collect_xml_paths_cached(&TIPITAKA_XML_PATHS_CACHE, root, |_, name| {
         name.ends_with(".xml") && !name.contains("toc") && !name.contains("sitemap")
     });
 
@@ -2853,7 +3043,8 @@ pub fn gretil_grep(
     };
 
     // Collect XML file paths using ignore crate
-    let paths = collect_xml_paths(root, |_, name| name.ends_with(".xml"));
+    let paths =
+        collect_xml_paths_cached(&XML_PATHS_ALL_CACHE, root, |_, name| name.ends_with(".xml"));
 
     // Search files in parallel using ripgrep
     paths
@@ -2913,6 +3104,79 @@ pub fn gretil_grep(
         .into_iter()
         .take(max_results)
         .collect()
+}
+
+pub fn sarit_grep(
+    root: &Path,
+    query: &str,
+    max_results: usize,
+    max_matches_per_file: usize,
+) -> Vec<GrepResult> {
+    let matcher = match RegexMatcherBuilder::new()
+        .case_insensitive(true)
+        .multi_line(true)
+        .build(query)
+    {
+        Ok(m) => m,
+        Err(_) => return Vec::new(),
+    };
+
+    let paths = collect_xml_paths_cached(&SARIT_XML_PATHS_CACHE, root, |path, name| {
+        is_sarit_xml(path, name)
+    });
+
+    let mut results: Vec<GrepResult> = paths
+        .par_iter()
+        .filter_map(|p| {
+            let rg_matches = ripgrep_search_file(p, &matcher, max_matches_per_file)?;
+            let file_size = std::fs::metadata(p).ok().map(|m| m.len()).unwrap_or(0);
+
+            let grep_matches: Vec<GrepMatch> = rg_matches
+                .iter()
+                .map(|m| {
+                    let highlight = matcher
+                        .find(m.line_content.as_bytes())
+                        .ok()
+                        .flatten()
+                        .map(|mat| {
+                            m.line_content
+                                .get(mat.start()..mat.end())
+                                .unwrap_or("")
+                                .to_string()
+                        })
+                        .unwrap_or_default();
+
+                    GrepMatch {
+                        context: m.line_content.clone(),
+                        highlight,
+                        juan_number: None,
+                        section: None,
+                        line_number: Some(m.line_number as usize),
+                    }
+                })
+                .collect();
+
+            let file_id = stem_from(p);
+            let title = file_id.clone();
+            let total_matches = grep_matches.len();
+            let fetch_hints = FetchHints {
+                recommended_parts: vec!["full".to_string()],
+                total_content_size: Some(format!("{}KB", file_size / 1024)),
+                structure_info: Vec::new(),
+            };
+            Some(GrepResult {
+                file_path: p.to_string_lossy().to_string(),
+                file_id,
+                title,
+                matches: grep_matches,
+                total_matches,
+                fetch_hints,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    grep_sort_best_first(&mut results, max_results);
+    results
 }
 
 mod lib_line_extraction;

@@ -2,12 +2,14 @@ use clap::{Parser, Subcommand};
 use daizo_core::path_resolver::{
     cache_dir, cbeta_root, find_exact_file_by_name, find_tipitaka_content_for_base, gretil_root,
     resolve_cbeta_path_by_id, resolve_gretil_by_id, resolve_gretil_path_direct,
-    resolve_tipitaka_by_id, tipitaka_root,
+    resolve_sarit_by_id, resolve_sarit_path_direct, resolve_tipitaka_by_id, sarit_root,
+    tipitaka_root,
 };
 use daizo_core::text_utils::compute_match_score_sanskrit;
-use daizo_core::text_utils::{compute_match_score, normalized};
+use daizo_core::text_utils::{compute_match_score_precomputed, normalized, PrecomputedQuery};
 use daizo_core::{
-    build_cbeta_index, build_gretil_index, build_index, build_tipitaka_index, extract_text,
+    build_cbeta_index, build_gretil_index, build_index, build_sarit_index, build_tipitaka_index,
+    extract_text,
 };
 use serde::Serialize;
 use std::env;
@@ -43,7 +45,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Initialize data: clone xml-p5 and tipitaka-xml and build indices
+    /// Initialize data: clone xml-p5, tipitaka-xml, SARIT-corpus and build indices
     Init {
         /// Override HOME/.daizo base
         #[arg(long)]
@@ -199,6 +201,93 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
+    /// Search SARIT titles (index-based)
+    SaritTitleSearch {
+        /// Query string
+        #[arg(long)]
+        query: String,
+        /// Max results
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        /// Output JSON
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Fetch SARIT text by id or query
+    SaritFetch {
+        /// File stem id (e.g., asvaghosa-buddhacarita)
+        #[arg(long)]
+        id: Option<String>,
+        /// Alternative: search query to pick best match
+        #[arg(long)]
+        query: Option<String>,
+        /// Include <note> text
+        #[arg(long, default_value_t = false)]
+        include_notes: bool,
+        /// Return full text (no slicing)
+        #[arg(long, default_value_t = false)]
+        full: bool,
+        /// Highlight string/regex pattern
+        #[arg(long)]
+        highlight: Option<String>,
+        /// Interpret highlight as regex
+        #[arg(long, default_value_t = false)]
+        highlight_regex: bool,
+        /// Highlight prefix
+        #[arg(long)]
+        highlight_prefix: Option<String>,
+        /// Highlight suffix
+        #[arg(long)]
+        highlight_suffix: Option<String>,
+        /// Headings preview limit
+        #[arg(long, default_value_t = 20)]
+        headings_limit: usize,
+        /// Pagination: start char (inclusive)
+        #[arg(long)]
+        start_char: Option<usize>,
+        /// Pagination: end char (exclusive)
+        #[arg(long)]
+        end_char: Option<usize>,
+        /// Pagination: max chars
+        #[arg(long)]
+        max_chars: Option<usize>,
+        /// Pagination: page index
+        #[arg(long)]
+        page: Option<usize>,
+        /// Pagination: page size
+        #[arg(long)]
+        page_size: Option<usize>,
+        /// Target line number for context extraction
+        #[arg(long)]
+        line_number: Option<usize>,
+        /// Number of lines before target line (default: 10)
+        #[arg(long, default_value_t = 10)]
+        context_before: usize,
+        /// Number of lines after target line (default: 100)
+        #[arg(long, default_value_t = 100)]
+        context_after: usize,
+        /// Number of lines before/after target line (deprecated, use context_before/context_after)
+        #[arg(long)]
+        context_lines: Option<usize>,
+        /// Output JSON
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Search SARIT corpus (content-based)
+    SaritSearch {
+        /// Query string (regular expression)
+        #[arg(long)]
+        query: String,
+        /// Maximum number of files to return
+        #[arg(long, default_value_t = 20)]
+        max_results: usize,
+        /// Maximum matches per file
+        #[arg(long, default_value_t = 5)]
+        max_matches_per_file: usize,
+        /// Output JSON
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
     /// Print CLI version
     Version {},
     /// Diagnose install and data directories
@@ -209,7 +298,7 @@ enum Commands {
     },
     /// Uninstall binaries from $DAIZO_DIR/bin (and optionally data/cache)
     Uninstall {
-        /// Also remove data (xml-p5, tipitaka-xml) and cache under $DAIZO_DIR
+        /// Also remove data (xml-p5, tipitaka-xml, SARIT-corpus) and cache under $DAIZO_DIR
         #[arg(long, default_value_t = false)]
         purge: bool,
     },
@@ -542,9 +631,18 @@ enum Commands {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Build SARIT index under ~/.daizo/cache/sarit-index.json
+    SaritIndex {
+        /// Root directory of SARIT-corpus (default ~/.daizo/SARIT-corpus)
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Output path (default ~/.daizo/cache/sarit-index.json)
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Rebuild search indexes (deletes cache JSON first)
     IndexRebuild {
-        /// Source to rebuild: cbeta | tipitaka | all
+        /// Source to rebuild: cbeta | tipitaka | sarit | all
         #[arg(long, default_value = "all")]
         source: String,
     },
@@ -713,6 +811,10 @@ fn main() -> anyhow::Result<()> {
             if !daizo_core::repo::ensure_tipitaka_data_at(&tipitaka_dir) {
                 anyhow::bail!("failed to ensure Tipitaka data");
             }
+            let sarit_dir = base_dir.join("SARIT-corpus");
+            if !daizo_core::repo::ensure_sarit_data_at(&sarit_dir) {
+                anyhow::bail!("failed to ensure SARIT data");
+            }
             // build indices
             eprintln!("[init] Building CBETA index...");
             let cbeta_entries = build_cbeta_index(&cbeta_dir);
@@ -722,12 +824,18 @@ fn main() -> anyhow::Result<()> {
             let tipitaka_entries = build_index(&tipitaka_dir.join("romn"), Some("romn"));
             eprintln!("[init] Found {} Tipitaka entries", tipitaka_entries.len());
 
+            eprintln!("[init] Building SARIT index...");
+            let sarit_entries = build_sarit_index(&sarit_dir);
+            eprintln!("[init] Found {} SARIT entries", sarit_entries.len());
+
             let cache_dir = base_dir.join("cache");
             fs::create_dir_all(&cache_dir)?;
             let cbeta_out = cache_dir.join("cbeta-index.json");
             let tipitaka_out = cache_dir.join("tipitaka-index.json");
+            let sarit_out = cache_dir.join("sarit-index.json");
             fs::write(&cbeta_out, serde_json::to_vec(&cbeta_entries)?)?;
             fs::write(&tipitaka_out, serde_json::to_vec(&tipitaka_entries)?)?;
+            fs::write(&sarit_out, serde_json::to_vec(&sarit_entries)?)?;
             println!(
                 "[init] cbeta-index: {} ({} entries)",
                 cbeta_out.to_string_lossy(),
@@ -737,6 +845,11 @@ fn main() -> anyhow::Result<()> {
                 "[init] tipitaka-index: {} ({} entries)",
                 tipitaka_out.to_string_lossy(),
                 tipitaka_entries.len()
+            );
+            println!(
+                "[init] sarit-index: {} ({} entries)",
+                sarit_out.to_string_lossy(),
+                sarit_entries.len()
             );
         }
         Commands::CbetaTitleSearch { query, limit, json } => {
@@ -935,6 +1048,21 @@ fn main() -> anyhow::Result<()> {
         } => {
             cmd_gretil::gretil_search(&query, max_results, max_matches_per_file, json)?;
         }
+        Commands::SaritTitleSearch { query, limit, json } => {
+            cmd_sarit::sarit_title_search(&query, limit, json)?;
+        }
+        Commands::SaritFetch { .. } => {
+            // pass-through to keep parity with gretil/cbeta style
+            cmd_sarit::sarit_fetch(&cli.command)?;
+        }
+        Commands::SaritSearch {
+            query,
+            max_results,
+            max_matches_per_file,
+            json,
+        } => {
+            cmd_sarit::sarit_search(&query, max_results, max_matches_per_file, json)?;
+        }
 
         Commands::SatSearch {
             query,
@@ -1061,6 +1189,43 @@ fn main() -> anyhow::Result<()> {
                 })?
             );
         }
+        Commands::SaritIndex { root, out } => {
+            let default_base = default_daizo().join("SARIT-corpus");
+            let base = root.unwrap_or(default_base.clone());
+
+            // Ensure SARIT data exists
+            if !default_base.exists() {
+                eprintln!("[sarit-index] SARIT data not found, downloading...");
+                let ok = run(
+                    "git",
+                    &[
+                        "clone",
+                        "--depth",
+                        "1",
+                        "https://github.com/sarit/SARIT-corpus.git",
+                        default_base.to_string_lossy().as_ref(),
+                    ],
+                    None,
+                );
+                if !ok {
+                    anyhow::bail!("Failed to clone SARIT repository");
+                }
+            }
+
+            let entries = build_sarit_index(&base);
+            let outp = out.unwrap_or(default_daizo().join("cache").join("sarit-index.json"));
+            if let Some(parent) = outp.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&outp, serde_json::to_vec(&entries)?)?;
+            println!(
+                "{}",
+                serde_json::to_string(&IndexResult {
+                    count: entries.len(),
+                    out: outp.to_string_lossy().as_ref()
+                })?
+            );
+        }
         Commands::TipitakaTitleSearch { query, limit, json } => {
             cmd_tipitaka::tipitaka_title_search(&query, limit, json)?;
         }
@@ -1127,6 +1292,9 @@ fn main() -> anyhow::Result<()> {
             if src == "tipitaka" || src == "all" {
                 let _ = fs::remove_file(cache.join("tipitaka-index.json"));
             }
+            if src == "sarit" || src == "all" {
+                let _ = fs::remove_file(cache.join("sarit-index.json"));
+            }
 
             // Call individual index commands
             if src == "cbeta" || src == "all" {
@@ -1154,6 +1322,17 @@ fn main() -> anyhow::Result<()> {
                     summary.insert("tipitaka".to_string(), serde_json::json!("completed"));
                 } else {
                     eprintln!("[error] Tipitaka index rebuild failed");
+                }
+            }
+            if src == "sarit" || src == "all" {
+                eprintln!("[rebuild] Running sarit-index...");
+                let cli_path = std::env::current_exe()?;
+                let ok = run(cli_path.to_string_lossy().as_ref(), &["sarit-index"], None);
+                if ok {
+                    rebuilt.push("sarit");
+                    summary.insert("sarit".to_string(), serde_json::json!("completed"));
+                } else {
+                    eprintln!("[error] SARIT index rebuild failed");
                 }
             }
 
@@ -1232,6 +1411,7 @@ fn main() -> anyhow::Result<()> {
             let mcp = bin.join("daizo-mcp");
             let cbeta = base.join("xml-p5");
             let tipi = base.join("tipitaka-xml");
+            let sarit = base.join("SARIT-corpus");
             let cache = base.join("cache");
             println!("DAIZO_DIR: {}", base.display());
             println!("bin: {}", bin.display());
@@ -1255,6 +1435,14 @@ fn main() -> anyhow::Result<()> {
             println!(
                 " - tipitaka-xml: {}",
                 if tipi.exists() {
+                    "OK"
+                } else {
+                    "MISSING (will clone on demand)"
+                }
+            );
+            println!(
+                " - SARIT-corpus: {}",
+                if sarit.exists() {
                     "OK"
                 } else {
                     "MISSING (will clone on demand)"
@@ -1300,9 +1488,11 @@ fn main() -> anyhow::Result<()> {
             if purge {
                 let cbeta = base.join("xml-p5");
                 let tipi = base.join("tipitaka-xml");
+                let sarit = base.join("SARIT-corpus");
                 let cache = base.join("cache");
                 let _ = std::fs::remove_dir_all(&cbeta);
                 let _ = std::fs::remove_dir_all(&tipi);
+                let _ = std::fs::remove_dir_all(&sarit);
                 let _ = std::fs::remove_dir_all(&cache);
                 println!("[purge] removed data/cache under {}", base.display());
             }
@@ -1328,33 +1518,71 @@ struct ScoredHit<'a> {
     score: f32,
 }
 
+fn scored_cmp(
+    a: &(f32, &daizo_core::IndexEntry),
+    b: &(f32, &daizo_core::IndexEntry),
+) -> std::cmp::Ordering {
+    match b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal) {
+        std::cmp::Ordering::Equal => a.1.id.cmp(&b.1.id),
+        other => other,
+    }
+}
+
+fn topk_insert<'a>(
+    top: &mut Vec<(f32, &'a daizo_core::IndexEntry)>,
+    cand: (f32, &'a daizo_core::IndexEntry),
+    limit: usize,
+) {
+    if limit == 0 {
+        return;
+    }
+    if top.len() == limit {
+        if let Some(worst) = top.last() {
+            if scored_cmp(&cand, worst) != std::cmp::Ordering::Less {
+                return;
+            }
+        }
+    }
+    let mut pos = top.len();
+    for i in 0..top.len() {
+        if scored_cmp(&cand, &top[i]) == std::cmp::Ordering::Less {
+            pos = i;
+            break;
+        }
+    }
+    if pos == top.len() {
+        top.push(cand);
+    } else {
+        top.insert(pos, cand);
+    }
+    if top.len() > limit {
+        top.truncate(limit);
+    }
+}
+
 pub(crate) fn best_match<'a>(
     entries: &'a [daizo_core::IndexEntry],
     q: &str,
     limit: usize,
 ) -> Vec<ScoredHit<'a>> {
-    let nq = normalized(q);
-    let mut scored: Vec<(f32, &daizo_core::IndexEntry)> = entries
-        .iter()
-        .map(|e| {
-            let mut s = compute_match_score(e, q, false);
-            if let Some(meta) = &e.meta {
-                for k in ["author", "editor", "translator", "publisher"].iter() {
-                    if let Some(v) = meta.get(*k) {
-                        let nv = normalized(v);
-                        if !nv.is_empty() && (nv.contains(&nq) || nq.contains(&nv)) {
-                            s = s.max(0.93);
-                        }
+    let pq = PrecomputedQuery::new(q, false);
+    let nq = pq.normalized();
+    let mut top: Vec<(f32, &daizo_core::IndexEntry)> = Vec::with_capacity(limit.min(32));
+    for e in entries.iter() {
+        let mut s = compute_match_score_precomputed(e, &pq);
+        if let Some(meta) = &e.meta {
+            for k in ["author", "editor", "translator", "publisher"].iter() {
+                if let Some(v) = meta.get(*k) {
+                    let nv = normalized(v);
+                    if !nv.is_empty() && (nv.contains(nq) || nq.contains(&nv)) {
+                        s = s.max(0.93);
                     }
                 }
             }
-            (s, e)
-        })
-        .collect();
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
-    scored
-        .into_iter()
-        .take(limit)
+        }
+        topk_insert(&mut top, (s, e), limit);
+    }
+    top.into_iter()
         .map(|(s, e)| ScoredHit { entry: e, score: s })
         .collect()
 }
@@ -1378,6 +1606,13 @@ pub(crate) fn load_or_build_tipitaka_index_cli() -> Vec<daizo_core::IndexEntry> 
                     .map(|m| !m.contains_key("headsPreview"))
                     .unwrap_or(true)
             });
+            let lacks_ver = v.iter().take(10).any(|e| {
+                e.meta
+                    .as_ref()
+                    .and_then(|m| m.get("indexVersion"))
+                    .map(|s| s.as_str() != "tipitaka_index_v2")
+                    .unwrap_or(true)
+            });
             let lacks_composite = v.iter().take(50).any(|e| {
                 if let Some(m) = &e.meta {
                     let p = m.get("alias_prefix").map(|s| s.as_str()).unwrap_or("");
@@ -1387,7 +1622,13 @@ pub(crate) fn load_or_build_tipitaka_index_cli() -> Vec<daizo_core::IndexEntry> 
                 }
                 false
             });
-            if !v.is_empty() && missing == 0 && !lacks_meta && !lacks_heads && !lacks_composite {
+            if !v.is_empty()
+                && missing == 0
+                && !lacks_meta
+                && !lacks_heads
+                && !lacks_ver
+                && !lacks_composite
+            {
                 return v;
             }
         }
@@ -1434,6 +1675,26 @@ pub(crate) fn load_or_build_gretil_index_cli() -> Vec<daizo_core::IndexEntry> {
         }
     }
     let entries = build_gretil_index(&gretil_root());
+    let _ = std::fs::create_dir_all(cache_dir());
+    let _ = std::fs::write(&out, serde_json::to_vec(&entries).unwrap_or_default());
+    entries
+}
+
+pub(crate) fn load_or_build_sarit_index_cli() -> Vec<daizo_core::IndexEntry> {
+    let out = cache_dir().join("sarit-index.json");
+    if let Ok(b) = std::fs::read(&out) {
+        if let Ok(v) = serde_json::from_slice::<Vec<daizo_core::IndexEntry>>(&b) {
+            let missing = v
+                .iter()
+                .take(10)
+                .filter(|e| !std::path::Path::new(&e.path).exists())
+                .count();
+            if !v.is_empty() && missing == 0 {
+                return v;
+            }
+        }
+    }
+    let entries = build_sarit_index(&sarit_root());
     let _ = std::fs::create_dir_all(cache_dir());
     let _ = std::fs::write(&out, serde_json::to_vec(&entries).unwrap_or_default());
     entries
@@ -1497,6 +1758,33 @@ pub(crate) fn resolve_gretil_path_cli(id: Option<&str>, query: Option<&str>) -> 
         }
     } else if let Some(q) = query {
         let idx = load_or_build_gretil_index_cli();
+        if let Some(hit) = best_match_gretil(&idx, q, 1).into_iter().next() {
+            return PathBuf::from(&hit.entry.path);
+        }
+    }
+    PathBuf::new()
+}
+
+pub(crate) fn resolve_sarit_path_cli(id: Option<&str>, query: Option<&str>) -> PathBuf {
+    if let Some(id_str) = id {
+        if let Some(p) = resolve_sarit_path_direct(id_str) {
+            return p;
+        }
+        let idx = load_or_build_sarit_index_cli();
+        if let Some(p) = resolve_sarit_by_id(&idx, id_str) {
+            return p;
+        }
+        if let Some(p) = find_exact_file_by_name(&sarit_root(), &format!("{}.xml", id_str)) {
+            return p;
+        }
+        if let Some(p) = find_exact_file_by_name(
+            &sarit_root().join("transliterated"),
+            &format!("{}.xml", id_str),
+        ) {
+            return p;
+        }
+    } else if let Some(q) = query {
+        let idx = load_or_build_sarit_index_cli();
         if let Some(hit) = best_match_gretil(&idx, q, 1).into_iter().next() {
             return PathBuf::from(&hit.entry.path);
         }
@@ -1716,4 +2004,4 @@ pub(crate) fn sniff_xml_encoding(head: &[u8]) -> Option<String> {
 
 //
 mod cmd;
-use cmd::{cbeta as cmd_cbeta, gretil as cmd_gretil, tipitaka as cmd_tipitaka};
+use cmd::{cbeta as cmd_cbeta, gretil as cmd_gretil, sarit as cmd_sarit, tipitaka as cmd_tipitaka};

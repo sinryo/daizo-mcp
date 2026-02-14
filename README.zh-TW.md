@@ -1,15 +1,15 @@
 # daizo-mcp
 
-面向 CBETA（中文）、巴利三藏（羅馬化）、GRETIL（梵文 TEI）、SAT（線上），以及透過線上語料進行的藏文全文搜尋（BUDA/BDRC、Adarshah）的高速佛典搜尋與擷取。包含 MCP 伺服器與 CLI，採用 Rust 實作，專注於速度與穩定性。
+面向 CBETA（中文）、巴利三藏（羅馬化）、GRETIL（梵文 TEI）、SARIT（TEI P5）、SAT（線上），以及透過線上語料進行的藏文全文搜尋（BUDA/BDRC、Adarshah）的高速佛典搜尋與擷取。包含 MCP 伺服器與 CLI，採用 Rust 實作，專注於速度與穩定性。
 
 相關: [English README](README.md) | [日本語 README](README.ja.md)
 
 ## 亮點
 
 - **直接 ID 存取**：已知文本 ID 時可即時取得（最快！）
-- CBETA / Tipitaka / GRETIL 文字內容快速正則搜尋（附行號）
+- CBETA / Tipitaka / GRETIL / SARIT 文字內容快速正則搜尋（附行號）
 - CBETA 搜尋可接受較現代的字形（新舊字、簡繁等會被正規化以避免漏掉大正藏本文）
-- 標題搜尋（CBETA / Tipitaka / GRETIL）
+- 標題搜尋（CBETA / Tipitaka / GRETIL / SARIT）
 - 以行號或字元範圍精準擷取上下文
 - SAT 線上搜尋（含智慧快取）
 - 藏文線上全文搜尋（BUDA/BDRC + Adarshah，EWTS/Wylie 會嘗試自動轉為藏文字）
@@ -180,7 +180,7 @@ daizo-cli update --yes              # 重新安裝 CLI
 ## 目錄與環境變數
 
 - `DAIZO_DIR`（預設：`~/.daizo`）
-  - 資料：`xml-p5/`, `tipitaka-xml/romn/`, `GRETIL/`
+  - 資料：`xml-p5/`, `tipitaka-xml/romn/`, `GRETIL/`, `SARIT-corpus/`
   - 快取：`cache/`
   - 二進位：`bin/`
 - `DAIZO_DEBUG=1` 啟用簡易 MCP 除錯日誌

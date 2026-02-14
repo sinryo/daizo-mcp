@@ -24,6 +24,9 @@ pub fn tipitaka_root() -> PathBuf {
 pub fn gretil_root() -> PathBuf {
     daizo_home().join("GRETIL").join("1_sanskr").join("tei")
 }
+pub fn sarit_root() -> PathBuf {
+    daizo_home().join("SARIT-corpus")
+}
 pub fn cache_dir() -> PathBuf {
     daizo_home().join("cache")
 }
@@ -546,6 +549,58 @@ pub fn resolve_gretil_path_direct(id: &str) -> Option<PathBuf> {
     }
 
     None
+}
+
+/// Fast direct path resolution for SARIT using direct file access.
+/// Supports: file stem (e.g., "asvaghosa-buddhacarita") and tries both repository root
+/// and "transliterated/" subdir.
+pub fn resolve_sarit_path_direct(id: &str) -> Option<PathBuf> {
+    // Avoid accidental path traversal; SARIT IDs should be file stems.
+    if id.contains('/') || id.contains('\\') {
+        return None;
+    }
+    let root = sarit_root();
+
+    let fname = if id.ends_with(".xml") {
+        id.to_string()
+    } else {
+        format!("{}.xml", id)
+    };
+
+    let p0 = root.join(&fname);
+    if p0.exists() {
+        return Some(p0);
+    }
+    let p1 = root.join("transliterated").join(&fname);
+    if p1.exists() {
+        return Some(p1);
+    }
+    None
+}
+
+/// Resolve a SARIT TEI path by id (file stem) using fast direct resolution first, then index fallbacks.
+pub fn resolve_sarit_by_id(index: &[IndexEntry], id: &str) -> Option<PathBuf> {
+    if let Some(path) = resolve_sarit_path_direct(id) {
+        return Some(path);
+    }
+    // exact stem match via index first
+    for e in index.iter() {
+        if Path::new(&e.path)
+            .file_stem()
+            .map(|s| s == id)
+            .unwrap_or(false)
+        {
+            return Some(PathBuf::from(&e.path));
+        }
+    }
+    // directory scan fallback (can be expensive)
+    if let Some(p) = find_in_dir(&sarit_root(), id) {
+        return Some(p);
+    }
+    // exact filename fallback
+    find_exact_file_by_name(&sarit_root(), &format!("{}.xml", id)).or_else(|| {
+        find_exact_file_by_name(&sarit_root().join("transliterated"), &format!("{}.xml", id))
+    })
 }
 
 /// Resolve a GRETIL TEI path by id (file stem) using fast direct resolution first, then index fallbacks.
