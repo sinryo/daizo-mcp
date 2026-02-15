@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+## [0.6.1] - 2026-02-15
+
+### Added
+- feat(jozen): online search/fetch for Jodo Shu Zensho (浄土宗全書) via `jozen_search` / `jozen_fetch`.
+
+### Changed
+- Version bumped: `daizo-core` 0.6.1, `daizo-cli` 0.6.1, `daizo-mcp` 0.6.1.
+
 ## [0.3.8] - 2025-09-15
 
 ### Changed

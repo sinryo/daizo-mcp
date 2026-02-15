@@ -1,6 +1,6 @@
 # daizo-mcp
 
-CBETA（漢文）、パーリ三蔵（ローマ字）、GRETIL（サンスクリット TEI）、SARIT（TEI P5）、SAT（オンライン）に加え、チベット大蔵経系のオンライン全文検索（BUDA/BDRC・Adarshah）にも対応した、高速な仏教テキスト検索・取得のための MCP サーバーおよび CLI です。Rust で実装し、高速・堅牢に動作します。
+CBETA（漢文）、パーリ三蔵（ローマ字）、GRETIL（サンスクリット TEI）、SARIT（TEI P5）、SAT（オンライン）、浄土宗全書（オンライン）に加え、チベット大蔵経系のオンライン全文検索（BUDA/BDRC・Adarshah）にも対応した、高速な仏教テキスト検索・取得のための MCP サーバーおよび CLI です。Rust で実装し、高速・堅牢に動作します。
 
 関連: [English README](README.md) | [繁體中文 README](README.zh-TW.md)
 
@@ -12,6 +12,7 @@ CBETA（漢文）、パーリ三蔵（ローマ字）、GRETIL（サンスクリ
 - タイトル検索（CBETA / Tipitaka / GRETIL / SARIT）
 - 行番号や文字位置での前後コンテキスト取得
 - SAT オンライン検索（スマートキャッシュ付き）
+- 浄土宗全書（オンライン）の検索・本文取得（キャッシュ付き）
 - チベット語のオンライン全文検索（BUDA/BDRC + Adarshah、EWTS/Wylieの簡易自動変換つき）
 - ワンコマンド・ブートストラップとインデックス構築
 
@@ -116,6 +117,7 @@ daizo-cli update --yes              # CLI の再インストール
 - `tipitaka_title_search`, `tipitaka_search`
 - `gretil_title_search`, `gretil_search`
 - `sat_search`
+- `jozen_search`
 - `tibetan_search`（チベット語のオンライン全文検索。`sources:["buda","adarshah"]`。BUDAは `exact` でフレーズ検索、Adarshahは `wildcard`、`maxSnippetChars` でスニペット長）
 
 取得:
@@ -123,6 +125,7 @@ daizo-cli update --yes              # CLI の再インストール
 - `tipitaka_fetch`（`lineNumber`, `contextBefore`, `contextAfter` をサポート）
 - `gretil_fetch`（`lineNumber`, `contextBefore`, `contextAfter`, `headQuery`, `headIndex` をサポート）
 - `sat_fetch`, `sat_pipeline`（`exact` をサポート。デフォルトはフレーズ検索）
+- `jozen_fetch`（`lineno` 指定で1ページ取得。`[J..] ...` 形式で返す）
 
 ## 低トークン運用（AI クライアント向け）
 
@@ -181,6 +184,7 @@ Tips: `DAIZO_HINT_TOP` でサジェスト件数を制御（既定 1）。
 - Tipitaka (romanized): https://github.com/VipassanaTech/tipitaka-xml
 - GRETIL (Sanskrit TEI): https://gretil.sub.uni-goettingen.de/
 - SAT (online): wrap7 / detail エンドポイント
+- 浄土宗全書（オンライン）: jodoshuzensho.jp
 - BUDA/BDRC（チベット語オンライン）: library.bdrc.io / autocomplete.bdrc.io
 - Adarshah（チベット語オンライン）: online.adarshah.org / api.adarshah.org
 
@@ -208,13 +212,13 @@ Tips: `DAIZO_HINT_TOP` でサジェスト件数を制御（既定 1）。
 
 ```bash
 # 自動一括（バンプ → コミット → タグ → プッシュ → GitHub リリース自動ノート）
-scripts/release.sh 0.5.0 --all
+scripts/release.sh 0.6.1 --all
 
 # CHANGELOG をノートに使用
-scripts/release.sh 0.5.0 --push --release
+scripts/release.sh 0.6.1 --push --release
 
 # ドライラン
-scripts/release.sh 0.5.0 --all --dry-run
+scripts/release.sh 0.6.1 --all --dry-run
 ```
 
 ## ライセンス

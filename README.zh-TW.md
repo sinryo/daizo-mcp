@@ -1,6 +1,6 @@
 # daizo-mcp
 
-面向 CBETA（中文）、巴利三藏（羅馬化）、GRETIL（梵文 TEI）、SARIT（TEI P5）、SAT（線上），以及透過線上語料進行的藏文全文搜尋（BUDA/BDRC、Adarshah）的高速佛典搜尋與擷取。包含 MCP 伺服器與 CLI，採用 Rust 實作，專注於速度與穩定性。
+面向 CBETA（中文）、巴利三藏（羅馬化）、GRETIL（梵文 TEI）、SARIT（TEI P5）、SAT（線上）、浄土宗全書（線上），以及透過線上語料進行的藏文全文搜尋（BUDA/BDRC、Adarshah）的高速佛典搜尋與擷取。包含 MCP 伺服器與 CLI，採用 Rust 實作，專注於速度與穩定性。
 
 相關: [English README](README.md) | [日本語 README](README.ja.md)
 
@@ -12,6 +12,7 @@
 - 標題搜尋（CBETA / Tipitaka / GRETIL / SARIT）
 - 以行號或字元範圍精準擷取上下文
 - SAT 線上搜尋（含智慧快取）
+- 浄土宗全書（線上）搜尋/本文擷取（含快取）
 - 藏文線上全文搜尋（BUDA/BDRC + Adarshah，EWTS/Wylie 會嘗試自動轉為藏文字）
 - 一鍵初始化與索引建置
 
@@ -116,6 +117,7 @@ daizo-cli update --yes              # 重新安裝 CLI
 - `tipitaka_title_search`, `tipitaka_search`
 - `gretil_title_search`, `gretil_search`
 - `sat_search`
+- `jozen_search`
 - `tibetan_search`（藏文線上全文搜尋；`sources:["buda","adarshah"]`，BUDA 支援 `exact` 短語搜尋，Adarshah 支援 `wildcard`，`maxSnippetChars` 控制片段長度）
 
 取得：
@@ -123,6 +125,7 @@ daizo-cli update --yes              # 重新安裝 CLI
 - `tipitaka_fetch`（支援 `lineNumber`, `contextBefore`, `contextAfter`）
 - `gretil_fetch`（支援 `lineNumber`, `contextBefore`, `contextAfter`）
 - `sat_fetch`, `sat_pipeline`
+- `jozen_fetch`（以 `lineno` 擷取單頁；回傳格式為 `[J..] ...`）
 
 ## 低代幣用法（AI 用戶端）
 
@@ -174,6 +177,7 @@ daizo-cli update --yes              # 重新安裝 CLI
 - Tipitaka（羅馬化）: https://github.com/VipassanaTech/tipitaka-xml
 - GRETIL（梵文 TEI）: https://gretil.sub.uni-goettingen.de/
 - SAT（線上）: wrap7 / detail 端點
+- 浄土宗全書（線上）: jodoshuzensho.jp
 - BUDA/BDRC（藏文線上）: library.bdrc.io / autocomplete.bdrc.io
 - Adarshah（藏文線上）: online.adarshah.org / api.adarshah.org
 
@@ -201,13 +205,13 @@ daizo-cli update --yes              # 重新安裝 CLI
 
 ```bash
 # 全自動（bump → commit → tag → push → GitHub 釋出，自動筆記）
-scripts/release.sh 0.5.0 --all
+scripts/release.sh 0.6.1 --all
 
 # 使用 CHANGELOG 筆記
-scripts/release.sh 0.5.0 --push --release
+scripts/release.sh 0.6.1 --push --release
 
 # 模擬執行
-scripts/release.sh 0.5.0 --all --dry-run
+scripts/release.sh 0.6.1 --all --dry-run
 ```
 
 ## 授權

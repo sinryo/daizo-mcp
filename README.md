@@ -1,6 +1,6 @@
 # daizo-mcp
 
-An MCP (Model Context Protocol) server plus CLI for fast Buddhist text search and retrieval. Supports CBETA (Chinese), Pāli Tipitaka (romanized), GRETIL (Sanskrit TEI), SARIT (TEI P5), SAT (online), and Tibetan full-text search via online corpora (BUDA/BDRC, Adarshah). Implemented in Rust for speed and reliability.
+An MCP (Model Context Protocol) server plus CLI for fast Buddhist text search and retrieval. Supports CBETA (Chinese), Pāli Tipitaka (romanized), GRETIL (Sanskrit TEI), SARIT (TEI P5), SAT (online), Jodo Shu Zensho (浄土宗全書, online), and Tibetan full-text search via online corpora (BUDA/BDRC, Adarshah). Implemented in Rust for speed and reliability.
 
 See also: [日本語 README](README.ja.md) | [繁體中文 README](README.zh-TW.md)
 
@@ -12,6 +12,7 @@ See also: [日本語 README](README.ja.md) | [繁體中文 README](README.zh-TW.
 - Title search across CBETA, Tipitaka, GRETIL, and SARIT indices
 - Precise context fetching by line number or character range
 - Optional SAT online search with smart caching
+- Jodo Shu Zensho (浄土宗全書) online search/fetch with caching
 - Tibetan online full-text search (BUDA/BDRC + Adarshah), with EWTS/Wylie best-effort auto-conversion
 - One-shot bootstrap and index build
 
@@ -116,6 +117,7 @@ Search:
 - `tipitaka_title_search`, `tipitaka_search`
 - `gretil_title_search`, `gretil_search`
 - `sat_search`
+- `jozen_search`
 - `tibetan_search` (online Tibetan full-text search; `sources:["buda","adarshah"]`, `exact` for phrase search on BUDA, `wildcard` for Adarshah, `maxSnippetChars` for snippet size)
 
 Fetch:
@@ -123,6 +125,7 @@ Fetch:
 - `tipitaka_fetch` (supports `lineNumber`, `contextBefore`, `contextAfter`)
 - `gretil_fetch` (supports `lineNumber`, `contextBefore`, `contextAfter`, `headQuery`, `headIndex`)
 - `sat_fetch`, `sat_pipeline` (supports `exact`; default is phrase search)
+- `jozen_fetch` (fetches a page by `lineno`; returns lines as `[J..] ...`)
 
 ## Low-Token Guide (AI clients)
 
@@ -181,6 +184,7 @@ Tip: Control number of suggestions via `DAIZO_HINT_TOP` (default 1).
 - Tipitaka (romanized): https://github.com/VipassanaTech/tipitaka-xml
 - GRETIL (Sanskrit TEI): https://gretil.sub.uni-goettingen.de/
 - SAT (online): wrap7/detail endpoints
+- Jodo Shu Zensho (浄土宗全書, online): jodoshuzensho.jp
 - BUDA/BDRC (online Tibetan): library.bdrc.io / autocomplete.bdrc.io
 - Adarshah (online Tibetan): online.adarshah.org / api.adarshah.org
 
@@ -208,13 +212,13 @@ Tip: Control number of suggestions via `DAIZO_HINT_TOP` (default 1).
 
 ```bash
 # Auto (bump → commit → tag → push → GitHub release with auto-notes)
-scripts/release.sh 0.5.0 --all
+scripts/release.sh 0.6.1 --all
 
 # CHANGELOG notes instead of auto-notes
-scripts/release.sh 0.5.0 --push --release
+scripts/release.sh 0.6.1 --push --release
 
 # Dry run
-scripts/release.sh 0.5.0 --all --dry-run
+scripts/release.sh 0.6.1 --all --dry-run
 ```
 
 ## License

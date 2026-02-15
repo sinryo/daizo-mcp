@@ -351,20 +351,31 @@ fn tools_list() -> Vec<serde_json::Value> {
             "startChar":{"type":"number"},
             "maxChars":{"type":"number"}
         },"required":["query"]})),
-        tool("sat_search", "Search SAT wrap7.php", json!({"type":"object","properties":{
-            "query":{"type":"string"},
-            "rows":{"type":"number"},
-            "offs":{"type":"number"},
-            "exact":{"type":"boolean"},
-            "titlesOnly":{"type":"boolean"},
-            "fields":{"type":"string"},
-            "fq":{"type":"array","items":{"type":"string"}},
-            "autoFetch":{"type":"boolean"}
-        },"required":["query"]})),
-        tool("tibetan_search", "Full-text search over Tibetan corpora (online). Use this when you want Tibetan full-text search without downloading corpora. Sources: adarshah, buda.", json!({"type":"object","properties":{
-            "query":{"type":"string","description":"Search query. Tibetan Unicode or EWTS/Wylie accepted (we may auto-convert EWTS to Unicode)."},
-            "sources":{"type":"array","items":{"type":"string","enum":["adarshah","buda"]},"description":"Search backends. Default: ['adarshah','buda']."},
-            "limit":{"type":"number","description":"Max total results (default: 10)"},
+	        tool("sat_search", "Search SAT wrap7.php", json!({"type":"object","properties":{
+	            "query":{"type":"string"},
+	            "rows":{"type":"number"},
+	            "offs":{"type":"number"},
+	            "exact":{"type":"boolean"},
+	            "titlesOnly":{"type":"boolean"},
+	            "fields":{"type":"string"},
+	            "fq":{"type":"array","items":{"type":"string"}},
+	            "autoFetch":{"type":"boolean"}
+	        },"required":["query"]})),
+	        tool("jozen_search", "Search Jodo Shu Zensho text database (online). Returns _meta.results and _meta.fetchSuggestions (use jozen_fetch with lineno).", json!({"type":"object","properties":{
+	            "query":{"type":"string","description":"Search keyword(s). Separate words by space for AND search."},
+	            "page":{"type":"number","description":"Page number (1-based). Default: 1."},
+	            "maxResults":{"type":"number","description":"Max results to return from that page (<=50). Default: 20."},
+	            "maxSnippetChars":{"type":"number","description":"Max snippet length in characters. Default: DAIZO_MCP_SNIPPET_LEN or 120."}
+	        },"required":["query"]})),
+	        tool("jozen_fetch", "Fetch Jodo Shu Zensho detail page by lineno (online). Returns page text with line IDs.", json!({"type":"object","properties":{
+	            "lineno":{"type":"string","description":"Line/page id (e.g., 'J01_0200B19' or 'J01_0200')"},
+	            "startChar":{"type":"number"},
+	            "maxChars":{"type":"number"}
+	        },"required":["lineno"]})),
+	        tool("tibetan_search", "Full-text search over Tibetan corpora (online). Use this when you want Tibetan full-text search without downloading corpora. Sources: adarshah, buda.", json!({"type":"object","properties":{
+	            "query":{"type":"string","description":"Search query. Tibetan Unicode or EWTS/Wylie accepted (we may auto-convert EWTS to Unicode)."},
+	            "sources":{"type":"array","items":{"type":"string","enum":["adarshah","buda"]},"description":"Search backends. Default: ['adarshah','buda']."},
+	            "limit":{"type":"number","description":"Max total results (default: 10)"},
             "exact":{"type":"boolean","description":"If true (default), prefer phrase/exact behavior when supported by the backend (currently BUDA)."},
             "maxSnippetChars":{"type":"number","description":"Max snippet length in characters (default: 240). Use 0 to disable truncation."},
             "wildcard":{"type":"boolean","description":"Adarshah-only: wildcard search (default false)."}
@@ -1901,7 +1912,7 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
             let version_info = json!({
                 "version": VERSION,
                 "name": "daizo-mcp",
-                "description": "MCP server for Buddhist scripture retrieval (CBETA, Tipitaka, GRETIL, SARIT, MUKTABODHA, SAT)",
+                "description": "MCP server for Buddhist scripture retrieval (CBETA, Tipitaka, GRETIL, SARIT, MUKTABODHA, SAT, JOZEN)",
                 "homepage": "https://github.com/sinryo/daizo-mcp",
                 "data_available": data_status,
                 "data_path": daizo_home().to_string_lossy(),
@@ -1917,7 +1928,8 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                     "GRETIL Sanskrit Texts (梵語文献)",
                     "SARIT TEI P5 corpus",
                     "MUKTABODHA Sanskrit library (IAST)",
-                    "SAT Database search"
+                    "SAT Database search",
+                    "Jodo Shu Zensho (浄土宗全書) search/fetch (online)"
                 ]
             });
             return json!({
@@ -3501,7 +3513,7 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
             });
             return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary}], "_meta": meta }});
         }
-        "sat_pipeline" => {
+	        "sat_pipeline" => {
             let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
             let exact = args.get("exact").and_then(|v| v.as_bool()).unwrap_or(true);
             let rows = args.get("rows").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
@@ -3611,12 +3623,134 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                 return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": sliced}], "_meta": meta }});
             } else {
                 return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": "no results"}], "_meta": {"count": 0} }});
-            }
-        }
-        "cbeta_search" => {
-            let q_raw0 = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-            let q_raw = q_raw0.trim();
-            let looks_like_regex = q_raw.chars().any(|c| ".+*?[](){}|\\".contains(c));
+	            }
+	        }
+	        "jozen_search" => {
+	            let q_raw0 = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+	            let q = q_raw0.trim().to_string();
+	            let page = args.get("page").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
+	            let page = page.max(1);
+	            let max_results = args
+	                .get("maxResults")
+	                .and_then(|v| v.as_u64())
+	                .unwrap_or(20) as usize;
+	            let max_results = std::cmp::min(max_results, 50);
+	            let max_snippet_chars = args
+	                .get("maxSnippetChars")
+	                .and_then(|v| v.as_u64())
+	                .map(|v| v as usize)
+	                .unwrap_or(default_snippet_len());
+	
+	            if q.is_empty() {
+	                let meta = json!({
+	                    "source": "jozen",
+	                    "query": q,
+	                    "page": page,
+	                    "pageSize": 50,
+	                    "totalCount": 0,
+	                    "totalPages": 0,
+	                    "results": [],
+	                    "fetchSuggestions": []
+	                });
+	                return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": "0 results"}], "_meta": meta }});
+	            }
+	
+	            let Some(html) = jozen_search_html(&q, page) else {
+	                let meta = json!({
+	                    "source": "jozen",
+	                    "query": q,
+	                    "page": page,
+	                    "results": [],
+	                    "error": "fetch failed"
+	                });
+	                return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": "0 results"}], "_meta": meta }});
+	            };
+	
+	            let parsed = jozen_parse_search_html(&html, &q, max_results, max_snippet_chars);
+	            let hint_top = std::env::var("DAIZO_HINT_TOP")
+	                .ok()
+	                .and_then(|s| s.parse::<usize>().ok())
+	                .unwrap_or(1);
+	            let mut fetch_suggestions: Vec<serde_json::Value> = Vec::new();
+	            for r in parsed.results.iter().take(hint_top) {
+	                if !r.lineno.is_empty() {
+	                    fetch_suggestions.push(json!({
+	                        "tool": "jozen_fetch",
+	                        "args": {"lineno": r.lineno.clone()}
+	                    }));
+	                }
+	            }
+	
+	            let total = parsed.total_count.unwrap_or(parsed.results.len());
+	            let total_pages = parsed.total_pages.unwrap_or(0);
+	            let summary = if total_pages > 0 {
+	                format!(
+	                    "{} results (page {}/{}); see _meta.results",
+	                    total, page, total_pages
+	                )
+	            } else {
+	                format!("{} results (page {}); see _meta.results", total, page)
+	            };
+	            let meta = json!({
+	                "source": "jozen",
+	                "query": q,
+	                "page": page,
+	                "pageSize": parsed.page_size.unwrap_or(50),
+	                "displayedCount": parsed.displayed_count,
+	                "totalCount": parsed.total_count.unwrap_or(0),
+	                "totalPages": parsed.total_pages.unwrap_or(0),
+	                "results": parsed.results,
+	                "fetchSuggestions": fetch_suggestions
+	            });
+	            return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": summary}], "_meta": meta }});
+	        }
+	        "jozen_fetch" => {
+	            let lineno0 = args.get("lineno").and_then(|v| v.as_str()).unwrap_or("");
+	            let lineno = lineno0.trim().to_string();
+	            if lineno.is_empty() {
+	                return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": "lineno is empty"}], "_meta": {"source":"jozen"} }});
+	            }
+	            let start = args.get("startChar").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+	            let maxc = args
+	                .get("maxChars")
+	                .and_then(|v| v.as_u64())
+	                .map(|v| v as usize)
+	                .unwrap_or(default_max_chars());
+	
+	            let source_url = jozen_detail_url(&lineno);
+	            let Some(html) = jozen_detail_html(&lineno) else {
+	                let meta = json!({
+	                    "source": "jozen",
+	                    "lineno": lineno,
+	                    "sourceUrl": source_url,
+	                    "error": "fetch failed"
+	                });
+	                return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": ""}], "_meta": meta }});
+	            };
+	            let detail = jozen_extract_detail(&html, &source_url);
+	            let (sliced, total_chars, returned_start, returned_end) =
+	                slice_text_bounds(&detail.content, start, maxc);
+	            let meta = json!({
+	                "source": "jozen",
+	                "sourceUrl": detail.source_url,
+	                "workHeader": detail.work_header,
+	                "textno": detail.textno,
+	                "pagePrev": detail.page_prev,
+	                "pageNext": detail.page_next,
+	                "lineCount": detail.line_ids.len(),
+	                "lineIds": detail.line_ids,
+	                "totalLength": total_chars as u64,
+	                "returnedStart": returned_start as u64,
+	                "returnedEnd": returned_end as u64,
+	                "truncated": returned_end < total_chars,
+	                "extractionMethod": "jozen-detail-extract"
+	            });
+	            return json!({"jsonrpc":"2.0","id": id, "result": { "content": [{"type":"text","text": sliced}], "_meta": meta }});
+	        }
+	        "cbeta_search" => {
+	            let q_raw0 = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+	            let q_raw = q_raw0.trim();
+	            let looks_like_regex = q_raw.chars().any(|c| ".+*?[](){}|\\".contains(c));
             let (q, q_display, hl_pat, hl_regex) = if looks_like_regex {
                 (
                     q_raw.to_string(),
@@ -6072,14 +6206,386 @@ fn buda_search_fulltext(
             "snippet": snippet,
             "url": url
         }));
-    }
-    out
-}
+	    }
+	    out
+	}
 
-fn sat_fetch(url: &str) -> String {
-    let cpath = cache_path_for(url);
-    if let Ok(s) = fs::read_to_string(&cpath) {
-        return s;
+	#[derive(Serialize, Clone)]
+	struct JozenHit {
+	    lineno: String,
+	    title: String,
+	    author: String,
+	    snippet: String,
+	    #[serde(rename = "detailUrl")]
+	    detail_url: String,
+	    #[serde(rename = "imageUrl")]
+	    image_url: String,
+	}
+	
+	struct JozenSearchParsed {
+	    total_count: Option<usize>,
+	    displayed_count: Option<usize>,
+	    total_pages: Option<usize>,
+	    page_size: Option<usize>,
+	    results: Vec<JozenHit>,
+	}
+	
+	struct JozenDetail {
+	    source_url: String,
+	    work_header: String,
+	    textno: Option<String>,
+	    page_prev: Option<String>,
+	    page_next: Option<String>,
+	    line_ids: Vec<String>,
+	    content: String,
+	}
+	
+	fn jozen_cache_path_for(key: &str) -> PathBuf {
+	    let mut hasher = Sha1::new();
+	    hasher.update(key.as_bytes());
+	    let h = hasher.finalize();
+	    let fname = format!("{:x}.html", h);
+	    let dir = cache_dir().join("jozen");
+	    ensure_dir(&dir);
+	    dir.join(fname)
+	}
+	
+	fn http_post_form_with_retry(
+	    url: &str,
+	    params: &[(&str, String)],
+	    max_retries: u32,
+	) -> Option<String> {
+	    let client = http_client();
+	    let mut attempt = 0u32;
+	    let mut backoff = 500u64; // ms
+	    loop {
+	        throttle(500);
+	        match client.post(url).form(&params).send() {
+	            Ok(resp) => {
+	                let status = resp.status();
+	                if status.is_success() {
+	                    if let Ok(t) = resp.text() {
+	                        return Some(t);
+	                    }
+	                }
+	                if status.as_u16() == 429 || status.is_server_error() {
+	                    // retry
+	                } else {
+	                    return None;
+	                }
+	            }
+	            Err(e) => {
+	                dbg_log(&format!("[http] post error attempt={} err={}", attempt + 1, e));
+	            }
+	        }
+	        attempt += 1;
+	        if attempt > max_retries {
+	            return None;
+	        }
+	        std::thread::sleep(Duration::from_millis(backoff));
+	        backoff = (backoff.saturating_mul(2)).min(8000);
+	    }
+	}
+	
+	fn jozen_search_html(query: &str, page: usize) -> Option<String> {
+	    const URL: &str = "https://jodoshuzensho.jp/jozensearch_post/search/connect_jozen_DB.php";
+	    let key = format!("POST|{}|keywd={}|page={}", URL, query, page);
+	    let cpath = jozen_cache_path_for(&key);
+	    if let Ok(s) = fs::read_to_string(&cpath) {
+	        return Some(s);
+	    }
+	    let params: Vec<(&str, String)> = vec![("keywd", query.to_string()), ("page", page.to_string())];
+	    if let Some(txt) = http_post_form_with_retry(URL, &params, 3) {
+	        let _ = fs::write(&cpath, &txt);
+	        return Some(txt);
+	    }
+	    None
+	}
+	
+		fn jozen_detail_url(lineno: &str) -> String {
+		    format!(
+		        "https://jodoshuzensho.jp/jozensearch_post/search/detail.php?lineno={}",
+		        urlencoding::encode(lineno.trim())
+		    )
+		}
+		
+		fn jozen_image_url(lineno: &str) -> String {
+		    format!(
+		        "https://jodoshuzensho.jp/jozensearch_post/search/image.php?lineno={}",
+		        urlencoding::encode(lineno.trim())
+		    )
+		}
+	
+	fn jozen_detail_html(lineno: &str) -> Option<String> {
+	    let url = jozen_detail_url(lineno);
+	    let key = format!("GET|{}", url);
+	    let cpath = jozen_cache_path_for(&key);
+	    if let Ok(s) = fs::read_to_string(&cpath) {
+	        return Some(s);
+	    }
+	    if let Some(txt) = http_get_with_retry(&url, 3) {
+	        let _ = fs::write(&cpath, &txt);
+	        return Some(txt);
+	    }
+	    None
+	}
+	
+	fn jozen_join_url(href: &str) -> String {
+	    let t = href.trim();
+	    if t.is_empty() {
+	        return String::new();
+	    }
+	    if t.starts_with("http://") || t.starts_with("https://") {
+	        return t.to_string();
+	    }
+	    let base = url::Url::parse("https://jodoshuzensho.jp/jozensearch_post/search/").unwrap();
+	    base.join(t)
+	        .map(|u| u.to_string())
+	        .unwrap_or_else(|_| format!("https://jodoshuzensho.jp/jozensearch_post/search/{}", t))
+	}
+	
+	fn jozen_extract_lineno_from_href(href: &str) -> Option<String> {
+	    let full = jozen_join_url(href);
+	    if full.is_empty() {
+	        return None;
+	    }
+	    let Ok(u) = url::Url::parse(&full) else {
+	        return None;
+	    };
+	    for (k, v) in u.query_pairs() {
+	        if k == "lineno" {
+	            let t = v.trim().to_string();
+	            if !t.is_empty() {
+	                return Some(t);
+	            }
+	        }
+	    }
+	    None
+	}
+	
+	fn jozen_html_fragment_to_text_keep_lb(inner_html: &str) -> String {
+	    static LB_RE: OnceLock<Regex> = OnceLock::new();
+	    let re = LB_RE.get_or_init(|| Regex::new(r"(?is)<lb[^>]*>").unwrap());
+	    let replaced = re.replace_all(inner_html, "\n");
+	    let frag = Html::parse_fragment(replaced.as_ref());
+	    let t = frag.root_element().text().collect::<Vec<_>>().join("");
+	    normalize_ws(&t)
+	}
+	
+	fn jozen_collect_text_compact(node: &scraper::ElementRef) -> String {
+	    node.text()
+	        .collect::<Vec<_>>()
+	        .join("")
+	        .split_whitespace()
+	        .collect::<Vec<_>>()
+	        .join(" ")
+	        .trim()
+	        .to_string()
+	}
+	
+	fn jozen_parse_search_html(
+	    html: &str,
+	    _query: &str,
+	    max_results: usize,
+	    max_snippet_chars: usize,
+	) -> JozenSearchParsed {
+	    let dom = Html::parse_document(html);
+	
+	    let mut total_count: Option<usize> = None;
+	    let mut displayed_count: Option<usize> = None;
+	    let mut total_pages: Option<usize> = None;
+	
+	    if let Ok(sel) = Selector::parse("p.rlt1") {
+	        if let Some(p) = dom.select(&sel).next() {
+	            let t = p.text().collect::<Vec<_>>().join("");
+	            static TOTAL_RE: OnceLock<Regex> = OnceLock::new();
+	            static DISP_RE: OnceLock<Regex> = OnceLock::new();
+		            let re_total = TOTAL_RE.get_or_init(|| Regex::new(r"全\s*([0-9,]+)\s*件").unwrap());
+		            let re_disp =
+		                DISP_RE.get_or_init(|| Regex::new(r"([0-9,]+)\s*件を表示").unwrap());
+	            if let Some(c) = re_total.captures(&t) {
+	                if let Some(m) = c.get(1) {
+	                    let n = m.as_str().replace(',', "");
+	                    total_count = n.parse::<usize>().ok();
+	                }
+	            }
+	            if let Some(c) = re_disp.captures(&t) {
+	                if let Some(m) = c.get(1) {
+	                    let n = m.as_str().replace(',', "");
+	                    displayed_count = n.parse::<usize>().ok();
+	                }
+	            }
+	        }
+	    }
+	
+	    if let Ok(sel) = Selector::parse("form[name=lastpage] input[name=page]") {
+	        if let Some(inp) = dom.select(&sel).next() {
+	            if let Some(v) = inp.value().attr("value") {
+	                total_pages = v.trim().parse::<usize>().ok();
+	            }
+	        }
+	    }
+	
+	    let mut results: Vec<JozenHit> = Vec::new();
+	    if max_results == 0 {
+	        return JozenSearchParsed {
+	            total_count,
+	            displayed_count,
+	            total_pages,
+	            page_size: displayed_count.or(Some(50)),
+	            results,
+	        };
+	    }
+	
+	    let tr_sel = Selector::parse("table.result_table tr").unwrap();
+	    let th_sel = Selector::parse("th").unwrap();
+	    let td_sel = Selector::parse("td").unwrap();
+	    let a_sel = Selector::parse("a").unwrap();
+	    for tr in dom.select(&tr_sel) {
+	        if tr.select(&th_sel).next().is_some() {
+	            continue;
+	        }
+	        let tds: Vec<_> = tr.select(&td_sel).collect();
+	        if tds.len() < 5 {
+	            continue;
+	        }
+	        let detail_href = tds[0]
+	            .select(&a_sel)
+	            .next()
+	            .and_then(|a| a.value().attr("href"))
+	            .unwrap_or("")
+	            .to_string();
+	        let image_href = tds[1]
+	            .select(&a_sel)
+	            .next()
+	            .and_then(|a| a.value().attr("href"))
+	            .unwrap_or("")
+	            .to_string();
+		        let mut lineno = jozen_collect_text_compact(&tds[0]);
+		        if lineno.is_empty() {
+		            lineno = jozen_extract_lineno_from_href(&detail_href).unwrap_or_default();
+		        }
+		        let title = jozen_collect_text_compact(&tds[2]);
+		        let author = jozen_collect_text_compact(&tds[3]);
+		        let snippet_html = tds[4].inner_html();
+		        let mut snippet = jozen_html_fragment_to_text_keep_lb(&snippet_html);
+		        if max_snippet_chars > 0 && snippet.chars().count() > max_snippet_chars {
+		            snippet = truncate_chars(&snippet, max_snippet_chars);
+		        }
+		        let detail_url = if !lineno.is_empty() {
+		            jozen_detail_url(&lineno)
+		        } else {
+		            jozen_join_url(&detail_href)
+		        };
+		        let image_url = if !lineno.is_empty() {
+		            jozen_image_url(&lineno)
+		        } else {
+		            jozen_join_url(&image_href)
+		        };
+		        results.push(JozenHit {
+		            lineno,
+		            title,
+		            author,
+	            snippet,
+	            detail_url,
+	            image_url,
+	        });
+	        if results.len() >= max_results {
+	            break;
+	        }
+	    }
+	
+	    JozenSearchParsed {
+	        total_count,
+	        displayed_count,
+	        total_pages,
+	        page_size: displayed_count.or(Some(50)),
+	        results,
+	    }
+	}
+	
+	fn jozen_is_textno(token: &str) -> bool {
+	    let b = token.as_bytes();
+	    if b.len() != 5 {
+	        return false;
+	    }
+	    b[0].is_ascii_alphabetic()
+	        && b[1].is_ascii_digit()
+	        && b[2].is_ascii_digit()
+	        && b[3].is_ascii_digit()
+	        && b[4].is_ascii_digit()
+	}
+	
+	fn jozen_extract_detail(html: &str, source_url: &str) -> JozenDetail {
+	    let dom = Html::parse_document(html);
+	
+	    let mut work_header = String::new();
+	    if let Ok(sel) = Selector::parse("p.sdt01") {
+	        if let Some(p) = dom.select(&sel).next() {
+	            work_header = p.text().collect::<Vec<_>>().join("").trim().to_string();
+	            if work_header.ends_with("画像") {
+	                work_header = work_header.trim_end_matches("画像").trim().to_string();
+	            }
+	        }
+	    }
+	
+	    let textno = work_header
+	        .split_whitespace()
+	        .next()
+	        .and_then(|t| if jozen_is_textno(t) { Some(t.to_string()) } else { None });
+	
+	    let page_prev = Selector::parse("a.tnbn_prev")
+	        .ok()
+	        .and_then(|sel| dom.select(&sel).next())
+	        .and_then(|a| a.value().attr("href"))
+	        .and_then(jozen_extract_lineno_from_href);
+	    let page_next = Selector::parse("a.tnbn_next")
+	        .ok()
+	        .and_then(|sel| dom.select(&sel).next())
+	        .and_then(|a| a.value().attr("href"))
+	        .and_then(jozen_extract_lineno_from_href);
+	
+	    let mut line_ids: Vec<String> = Vec::new();
+	    let mut out_lines: Vec<String> = Vec::new();
+	    let tr_sel = Selector::parse("table.sd_table tr").unwrap();
+	    let td1_sel = Selector::parse("td.sd_td1").unwrap();
+	    let td2_sel = Selector::parse("td.sd_td2").unwrap();
+	    for tr in dom.select(&tr_sel) {
+	        let Some(td1) = tr.select(&td1_sel).next() else {
+	            continue;
+	        };
+	        let Some(td2) = tr.select(&td2_sel).next() else {
+	            continue;
+	        };
+	        let id = jozen_collect_text_compact(&td1);
+	        let id = id.trim_end_matches(':').trim().to_string();
+	        if id.is_empty() {
+	            continue;
+	        }
+	        let text = td2.text().collect::<Vec<_>>().join("").trim().to_string();
+	        if text.is_empty() {
+	            continue;
+	        }
+	        line_ids.push(id.clone());
+	        out_lines.push(format!("[{}] {}", id, text));
+	    }
+	    let content = normalize_ws(&out_lines.join("\n"));
+	
+	    JozenDetail {
+	        source_url: source_url.to_string(),
+	        work_header,
+	        textno,
+	        page_prev,
+	        page_next,
+	        line_ids,
+	        content,
+	    }
+	}
+	
+	fn sat_fetch(url: &str) -> String {
+	    let cpath = cache_path_for(url);
+	    if let Ok(s) = fs::read_to_string(&cpath) {
+	        return s;
     }
     if let Some(txt) = http_get_with_retry(url, 3) {
         let text = extract_sat_text(&txt);
@@ -6562,7 +7068,7 @@ fn normalize_ws(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{sat_pick_best_doc, slice_text_bounds};
+    use super::{jozen_extract_detail, jozen_parse_search_html, sat_pick_best_doc, slice_text_bounds};
     use serde_json::json;
 
     #[test]
@@ -6616,6 +7122,69 @@ mod tests {
         let (i, reason, _sc) = sat_pick_best_doc(&docs, "須彌山");
         assert_eq!(i, 0);
         assert_eq!(reason, "bodyContains");
+    }
+
+    #[test]
+    fn jozen_parse_search_html_parses_counts_and_results() {
+        let html = r#"
+<!doctype html><html><body>
+<p class="rlt1">検索結果：全731件（
+50件を表示）</p>
+<form name="lastpage"><input type="hidden" name="page" value="15"></form>
+<table class="result_table"><tbody>
+<tr><th>巻_頁段行</th><th>画像</th><th>書名</th><th>著者・巻数</th><th>本文</th></tr>
+<tr>
+  <td nowrap><a href="detail.php?lineno=J01_0200B19&okikae=薬師">J01_0200B19</a></td>
+  <td nowrap><a href="image.php?lineno=J01_0200B19">画像</a></td>
+  <td nowrap>傍説浄土教経論集</td>
+  <td nowrap>〓</td>
+  <td><span style="color:red;">藥師</span>如來本願經<lb 01_0200B20_ />觀佛三昧海經</td>
+</tr>
+</tbody></table>
+</body></html>
+"#;
+        let parsed = jozen_parse_search_html(html, "薬師", 10, 200);
+        assert_eq!(parsed.total_count, Some(731));
+        assert_eq!(parsed.total_pages, Some(15));
+        assert_eq!(parsed.displayed_count, Some(50));
+        assert_eq!(parsed.results.len(), 1);
+        let r0 = &parsed.results[0];
+        assert_eq!(r0.lineno, "J01_0200B19");
+        assert_eq!(r0.title, "傍説浄土教経論集");
+        assert_eq!(r0.author, "〓");
+        assert!(r0.snippet.contains("藥師如來本願經"));
+        assert!(r0.snippet.contains("觀佛三昧海經"));
+        assert!(r0.detail_url.contains("detail.php?lineno=J01_0200B19"));
+        assert!(r0.image_url.contains("image.php?lineno=J01_0200B19"));
+    }
+
+    #[test]
+    fn jozen_extract_detail_parses_header_and_lines() {
+        let html = r#"
+<!doctype html><html><body>
+<div id="topnavi">
+  <a href="detail.php?lineno=J01_0199" class="tnbn_prev">(J01_0199)</a>
+  <a href="detail.php?lineno=J01_0201" class="tnbn_next">(J01_0201)</a>
+</div>
+<p class="sdt01">J0100　傍説浄土教経論集　〓　<a href="image.php?lineno=J01_0200A01">画像</a></p>
+<table class="sd_table"><tbody>
+<tr class="sd_pc"><th>巻＿頁段行</th><th>本文</th></tr>
+<tr><td class="sd_td1">J01_0200A01:</td><td class="sd_td2">般舟三昧經</td></tr>
+<tr><td class="sd_td1">J01_0200B19:</td><td class="sd_td2"><span style="color:red;">藥師</span>如來本願經</td></tr>
+</tbody></table>
+</body></html>
+"#;
+        let src = "https://example.test/detail.php?lineno=J01_0200B19";
+        let d = jozen_extract_detail(html, src);
+        assert_eq!(d.source_url, src);
+        assert!(d.work_header.starts_with("J0100"));
+        assert!(!d.work_header.contains("画像"));
+        assert_eq!(d.textno.as_deref(), Some("J0100"));
+        assert_eq!(d.page_prev.as_deref(), Some("J01_0199"));
+        assert_eq!(d.page_next.as_deref(), Some("J01_0201"));
+        assert_eq!(d.line_ids, vec!["J01_0200A01".to_string(), "J01_0200B19".to_string()]);
+        assert!(d.content.contains("[J01_0200A01] 般舟三昧經"));
+        assert!(d.content.contains("[J01_0200B19] 藥師如來本願經"));
     }
 }
 
