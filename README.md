@@ -7,9 +7,9 @@ See also: [日本語 README](README.ja.md) | [繁體中文 README](README.zh-TW.
 ## Highlights
 
 - **Direct ID Access**: Instant retrieval when you know the text ID (fastest path!)
-- Fast regex/content search with line numbers (CBETA/Tipitaka/GRETIL/SARIT)
+- Fast regex/content search with line numbers (CBETA/Tipitaka/GRETIL/SARIT/MUKTABODHA)
 - CBETA search works with modern forms too (new/old CJK variants are normalized so Taisho texts still hit)
-- Title search across CBETA, Tipitaka, GRETIL, and SARIT indices
+- Title search across CBETA, Tipitaka, GRETIL, SARIT, and MUKTABODHA indices
 - Precise context fetching by line number or character range
 - Optional SAT online search with smart caching
 - Jodo Shu Zensho (浄土宗全書) online search/fetch with caching
@@ -69,6 +69,12 @@ daizo-cli tipitaka-fetch --id SN1     # First Saṃyutta
 daizo-cli gretil-fetch --id saddharmapuNDarIka         # Lotus Sutra (Sanskrit)
 daizo-cli gretil-fetch --id vajracchedikA              # Diamond Sutra (Sanskrit)
 daizo-cli gretil-fetch --id prajJApAramitAhRdayasUtra  # Heart Sutra (Sanskrit)
+
+# SARIT: TEI P5 corpus (file stem)
+daizo-cli sarit-fetch --id asvaghosa-buddhacarita
+
+# MUKTABODHA: Sanskrit library (file stem; local files under $DAIZO_DIR/MUKTABODHA)
+daizo-cli muktabodha-fetch --id "<file-stem>"
 ```
 
 ### Search
@@ -77,11 +83,15 @@ daizo-cli gretil-fetch --id prajJApAramitAhRdayasUtra  # Heart Sutra (Sanskrit)
 # Title search
 daizo-cli cbeta-title-search --query "楞伽經" --json
 daizo-cli tipitaka-title-search --query "dn 1" --json
+daizo-cli sarit-title-search --query "buddhacarita" --json
+daizo-cli muktabodha-title-search --query "yoga" --json
 
 # Content search (with line numbers)
 daizo-cli cbeta-search --query "阿弥陀" --max-results 10
 daizo-cli tipitaka-search --query "nibbana|vipassana" --max-results 15
 daizo-cli gretil-search --query "yoga" --max-results 10
+daizo-cli sarit-search --query "yoga" --max-results 10
+daizo-cli muktabodha-search --query "yoga" --max-results 10
 ```
 
 ### Fetch with Context
@@ -91,6 +101,8 @@ daizo-cli gretil-search --query "yoga" --max-results 10
 daizo-cli cbeta-fetch --id T0858 --part 1 --max-chars 4000 --json
 daizo-cli tipitaka-fetch --id s0101m.mul --max-chars 2000 --json
 daizo-cli gretil-fetch --id buddhacarita --max-chars 4000 --json
+daizo-cli sarit-fetch --id asvaghosa-buddhacarita --max-chars 4000 --json
+daizo-cli muktabodha-fetch --id "<file-stem>" --max-chars 4000 --json
 
 # Context around a line (after search)
 daizo-cli cbeta-fetch --id T0858 --line-number 342 --context-before 10 --context-after 200
@@ -109,13 +121,20 @@ daizo-cli update --yes              # reinstall this CLI
 
 ## MCP Tools
 
+Core:
+- `daizo_version` (server version/build info)
+- `daizo_usage` (usage guide for AI clients; low-token flow)
+- `daizo_profile` (in-process benchmark for a tool call)
+
 Resolve:
-- `daizo_resolve` (resolve title/alias/ID into candidate corpus IDs and recommended next fetch calls)
+- `daizo_resolve` (resolve title/alias/ID into candidate corpus IDs and recommended next fetch calls; sources: cbeta/tipitaka/gretil/sarit/muktabodha)
 
 Search:
 - `cbeta_title_search`, `cbeta_search`
 - `tipitaka_title_search`, `tipitaka_search`
 - `gretil_title_search`, `gretil_search`
+- `sarit_title_search`, `sarit_search`
+- `muktabodha_title_search`, `muktabodha_search`
 - `sat_search`
 - `jozen_search`
 - `tibetan_search` (online Tibetan full-text search; `sources:["buda","adarshah"]`, `exact` for phrase search on BUDA, `wildcard` for Adarshah, `maxSnippetChars` for snippet size)
@@ -124,8 +143,13 @@ Fetch:
 - `cbeta_fetch` (supports `lb`, `lineNumber`, `contextBefore`, `contextAfter`, `headQuery`, `headIndex`, `format:"plain"`, `focusHighlight`; `plain` strips XML, resolves gaiji, excludes `teiHeader`, preserves line breaks; `focusHighlight` jumps near the first highlight match)
 - `tipitaka_fetch` (supports `lineNumber`, `contextBefore`, `contextAfter`)
 - `gretil_fetch` (supports `lineNumber`, `contextBefore`, `contextAfter`, `headQuery`, `headIndex`)
-- `sat_fetch`, `sat_pipeline` (supports `exact`; default is phrase search)
+- `sarit_fetch` (supports `lineNumber`, `contextBefore`, `contextAfter`)
+- `muktabodha_fetch` (supports `lineNumber`, `contextBefore`, `contextAfter`)
+- `sat_fetch`, `sat_detail`, `sat_pipeline` (supports `exact`; default is phrase search)
 - `jozen_fetch` (fetches a page by `lineno`; returns lines as `[J..] ...`)
+
+Pipelines:
+- `cbeta_pipeline`, `gretil_pipeline`, `sarit_pipeline`, `muktabodha_pipeline`, `sat_pipeline` (set `autoFetch=false` for summary-first)
 
 ## Low-Token Guide (AI clients)
 
@@ -138,6 +162,8 @@ When the text ID is known, **skip search entirely**:
 | CBETA | `T` + 4-digit number | `cbeta_fetch({id: "T0262"})` |
 | Tipitaka | `DN`, `MN`, `SN`, `AN`, `KN` + number | `tipitaka_fetch({id: "DN1"})` |
 | GRETIL | Sanskrit text name | `gretil_fetch({id: "saddharmapuNDarIka"})` |
+| SARIT | TEI file stem | `sarit_fetch({id: "asvaghosa-buddhacarita"})` |
+| MUKTABODHA | file stem | `muktabodha_fetch({id: "FILE_STEM"})` |
 
 ### Common IDs Reference
 
@@ -183,6 +209,8 @@ Tip: Control number of suggestions via `DAIZO_HINT_TOP` (default 1).
 - CBETA: https://github.com/cbeta-org/xml-p5
 - Tipitaka (romanized): https://github.com/VipassanaTech/tipitaka-xml
 - GRETIL (Sanskrit TEI): https://gretil.sub.uni-goettingen.de/
+- SARIT (TEI P5): https://github.com/sarit/SARIT-corpus
+- MUKTABODHA (Sanskrit; local files): place texts under `$DAIZO_DIR/MUKTABODHA/`
 - SAT (online): wrap7/detail endpoints
 - Jodo Shu Zensho (浄土宗全書, online): jodoshuzensho.jp
 - BUDA/BDRC (online Tibetan): library.bdrc.io / autocomplete.bdrc.io
@@ -191,7 +219,7 @@ Tip: Control number of suggestions via `DAIZO_HINT_TOP` (default 1).
 ## Directories and Env
 
 - `DAIZO_DIR` (default: `~/.daizo`)
-  - data: `xml-p5/`, `tipitaka-xml/romn/`, `GRETIL/`, `SARIT-corpus/`
+  - data: `xml-p5/`, `tipitaka-xml/romn/`, `GRETIL/`, `SARIT-corpus/`, `MUKTABODHA/`
   - cache: `cache/`
   - binaries: `bin/`
 - `DAIZO_DEBUG=1` enables minimal MCP debug log

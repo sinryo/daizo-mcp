@@ -7,9 +7,9 @@ CBETA（漢文）、パーリ三蔵（ローマ字）、GRETIL（サンスクリ
 ## 特長
 
 - **ダイレクトIDアクセス**: テキストIDが分かっていれば即座に取得（最速！）
-- CBETA / Tipitaka / GRETIL / SARIT に対する高速な正規表現検索（行番号つき）
+- CBETA / Tipitaka / GRETIL / SARIT / MUKTABODHA に対する高速な正規表現検索（行番号つき）
 - CBETA検索は新字体など“現代の表記”でもヒットするよう正規化（旧字体・簡繁などの揺れを吸収）
-- タイトル検索（CBETA / Tipitaka / GRETIL / SARIT）
+- タイトル検索（CBETA / Tipitaka / GRETIL / SARIT / MUKTABODHA）
 - 行番号や文字位置での前後コンテキスト取得
 - SAT オンライン検索（スマートキャッシュ付き）
 - 浄土宗全書（オンライン）の検索・本文取得（キャッシュ付き）
@@ -69,6 +69,12 @@ daizo-cli tipitaka-fetch --id SN1     # 相応部第1
 daizo-cli gretil-fetch --id saddharmapuNDarIka         # 法華経（梵文）
 daizo-cli gretil-fetch --id vajracchedikA              # 金剛般若経（梵文）
 daizo-cli gretil-fetch --id prajJApAramitAhRdayasUtra  # 般若心経（梵文）
+
+# SARIT: TEI P5 コーパス（ファイルstem）
+daizo-cli sarit-fetch --id asvaghosa-buddhacarita
+
+# MUKTABODHA: 梵文ライブラリ（ファイルstem。ローカルに $DAIZO_DIR/MUKTABODHA を配置）
+daizo-cli muktabodha-fetch --id "<file-stem>"
 ```
 
 ### 検索
@@ -77,11 +83,15 @@ daizo-cli gretil-fetch --id prajJApAramitAhRdayasUtra  # 般若心経（梵文�
 # タイトル検索
 daizo-cli cbeta-title-search --query "楞伽經" --json
 daizo-cli tipitaka-title-search --query "dn 1" --json
+daizo-cli sarit-title-search --query "buddhacarita" --json
+daizo-cli muktabodha-title-search --query "yoga" --json
 
 # 内容検索（行番号つき）
 daizo-cli cbeta-search --query "阿弥陀" --max-results 10
 daizo-cli tipitaka-search --query "nibbana|vipassana" --max-results 15
 daizo-cli gretil-search --query "yoga" --max-results 10
+daizo-cli sarit-search --query "yoga" --max-results 10
+daizo-cli muktabodha-search --query "yoga" --max-results 10
 ```
 
 ### コンテキスト付き取得
@@ -91,6 +101,8 @@ daizo-cli gretil-search --query "yoga" --max-results 10
 daizo-cli cbeta-fetch --id T0858 --part 1 --max-chars 4000 --json
 daizo-cli tipitaka-fetch --id s0101m.mul --max-chars 2000 --json
 daizo-cli gretil-fetch --id buddhacarita --max-chars 4000 --json
+daizo-cli sarit-fetch --id asvaghosa-buddhacarita --max-chars 4000 --json
+daizo-cli muktabodha-fetch --id "<file-stem>" --max-chars 4000 --json
 
 # 行番号の前後コンテキスト
 daizo-cli cbeta-fetch --id T0858 --line-number 342 --context-before 10 --context-after 200
@@ -109,13 +121,20 @@ daizo-cli update --yes              # CLI の再インストール
 
 ## MCP ツール
 
+基本:
+- `daizo_version`（サーバーのバージョン/ビルド情報）
+- `daizo_usage`（AI クライアント向けの使い方ガイド。低トークン運用の推奨フロー）
+- `daizo_profile`（ツール呼び出しの簡易ベンチマーク）
+
 解決:
-- `daizo_resolve`（タイトル/別名/ID からコーパス候補と、次に呼ぶべき取得ツール呼び出しを返す）
+- `daizo_resolve`（タイトル/別名/ID からコーパス候補と、次に呼ぶべき取得ツール呼び出しを返す。対象: cbeta/tipitaka/gretil/sarit/muktabodha）
 
 検索:
 - `cbeta_title_search`, `cbeta_search`
 - `tipitaka_title_search`, `tipitaka_search`
 - `gretil_title_search`, `gretil_search`
+- `sarit_title_search`, `sarit_search`
+- `muktabodha_title_search`, `muktabodha_search`
 - `sat_search`
 - `jozen_search`
 - `tibetan_search`（チベット語のオンライン全文検索。`sources:["buda","adarshah"]`。BUDAは `exact` でフレーズ検索、Adarshahは `wildcard`、`maxSnippetChars` でスニペット長）
@@ -124,8 +143,13 @@ daizo-cli update --yes              # CLI の再インストール
 - `cbeta_fetch`（`lb`, `lineNumber`, `contextBefore`, `contextAfter`, `headQuery`, `headIndex`, `format:"plain"`, `focusHighlight` をサポート。`plain` は XMLタグ除去・gaiji解決・teiHeader除外・改行保持。`focusHighlight` は最初のハイライト一致箇所付近にジャンプ）
 - `tipitaka_fetch`（`lineNumber`, `contextBefore`, `contextAfter` をサポート）
 - `gretil_fetch`（`lineNumber`, `contextBefore`, `contextAfter`, `headQuery`, `headIndex` をサポート）
-- `sat_fetch`, `sat_pipeline`（`exact` をサポート。デフォルトはフレーズ検索）
+- `sarit_fetch`（`lineNumber`, `contextBefore`, `contextAfter` をサポート）
+- `muktabodha_fetch`（`lineNumber`, `contextBefore`, `contextAfter` をサポート）
+- `sat_fetch`, `sat_detail`, `sat_pipeline`（`exact` をサポート。デフォルトはフレーズ検索）
 - `jozen_fetch`（`lineno` 指定で1ページ取得。`[J..] ...` 形式で返す）
+
+パイプライン:
+- `cbeta_pipeline`, `gretil_pipeline`, `sarit_pipeline`, `muktabodha_pipeline`, `sat_pipeline`（要約優先なら `autoFetch=false` 推奨）
 
 ## 低トークン運用（AI クライアント向け）
 
@@ -138,6 +162,8 @@ daizo-cli update --yes              # CLI の再インストール
 | CBETA | `T` + 4桁数字 | `cbeta_fetch({id: "T0262"})` |
 | Tipitaka | `DN`, `MN`, `SN`, `AN`, `KN` + 番号 | `tipitaka_fetch({id: "DN1"})` |
 | GRETIL | サンスクリットテキスト名 | `gretil_fetch({id: "saddharmapuNDarIka"})` |
+| SARIT | TEIファイルstem | `sarit_fetch({id: "asvaghosa-buddhacarita"})` |
+| MUKTABODHA | ファイルstem | `muktabodha_fetch({id: "FILE_STEM"})` |
 
 ### よく使うID一覧
 
@@ -183,6 +209,8 @@ Tips: `DAIZO_HINT_TOP` でサジェスト件数を制御（既定 1）。
 - CBETA: https://github.com/cbeta-org/xml-p5
 - Tipitaka (romanized): https://github.com/VipassanaTech/tipitaka-xml
 - GRETIL (Sanskrit TEI): https://gretil.sub.uni-goettingen.de/
+- SARIT（TEI P5）: https://github.com/sarit/SARIT-corpus
+- MUKTABODHA（梵文。ローカルファイル）: `$DAIZO_DIR/MUKTABODHA/` に配置
 - SAT (online): wrap7 / detail エンドポイント
 - 浄土宗全書（オンライン）: jodoshuzensho.jp
 - BUDA/BDRC（チベット語オンライン）: library.bdrc.io / autocomplete.bdrc.io
@@ -191,7 +219,7 @@ Tips: `DAIZO_HINT_TOP` でサジェスト件数を制御（既定 1）。
 ## ディレクトリと環境変数
 
 - `DAIZO_DIR`（既定: `~/.daizo`）
-  - データ: `xml-p5/`, `tipitaka-xml/romn/`, `GRETIL/`, `SARIT-corpus/`
+  - データ: `xml-p5/`, `tipitaka-xml/romn/`, `GRETIL/`, `SARIT-corpus/`, `MUKTABODHA/`
   - キャッシュ: `cache/`
   - バイナリ: `bin/`
 - `DAIZO_DEBUG=1` で簡易 MCP デバッグログ

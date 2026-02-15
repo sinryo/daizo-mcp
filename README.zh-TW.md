@@ -7,9 +7,9 @@
 ## 亮點
 
 - **直接 ID 存取**：已知文本 ID 時可即時取得（最快！）
-- CBETA / Tipitaka / GRETIL / SARIT 文字內容快速正則搜尋（附行號）
+- CBETA / Tipitaka / GRETIL / SARIT / MUKTABODHA 文字內容快速正則搜尋（附行號）
 - CBETA 搜尋可接受較現代的字形（新舊字、簡繁等會被正規化以避免漏掉大正藏本文）
-- 標題搜尋（CBETA / Tipitaka / GRETIL / SARIT）
+- 標題搜尋（CBETA / Tipitaka / GRETIL / SARIT / MUKTABODHA）
 - 以行號或字元範圍精準擷取上下文
 - SAT 線上搜尋（含智慧快取）
 - 浄土宗全書（線上）搜尋/本文擷取（含快取）
@@ -69,6 +69,12 @@ daizo-cli tipitaka-fetch --id SN1     # 相應部第一
 daizo-cli gretil-fetch --id saddharmapuNDarIka         # 法華經（梵文）
 daizo-cli gretil-fetch --id vajracchedikA              # 金剛般若經（梵文）
 daizo-cli gretil-fetch --id prajJApAramitAhRdayasUtra  # 般若心經（梵文）
+
+# SARIT：TEI P5 語料（檔名 stem）
+daizo-cli sarit-fetch --id asvaghosa-buddhacarita
+
+# MUKTABODHA：梵文資料庫（檔名 stem；本機檔案置於 $DAIZO_DIR/MUKTABODHA）
+daizo-cli muktabodha-fetch --id "<file-stem>"
 ```
 
 ### 搜尋
@@ -77,11 +83,15 @@ daizo-cli gretil-fetch --id prajJApAramitAhRdayasUtra  # 般若心經（梵文�
 # 標題搜尋
 daizo-cli cbeta-title-search --query "楞伽經" --json
 daizo-cli tipitaka-title-search --query "dn 1" --json
+daizo-cli sarit-title-search --query "buddhacarita" --json
+daizo-cli muktabodha-title-search --query "yoga" --json
 
 # 內容搜尋（附行號）
 daizo-cli cbeta-search --query "阿彌陀" --max-results 10
 daizo-cli tipitaka-search --query "nibbana|vipassana" --max-results 15
 daizo-cli gretil-search --query "yoga" --max-results 10
+daizo-cli sarit-search --query "yoga" --max-results 10
+daizo-cli muktabodha-search --query "yoga" --max-results 10
 ```
 
 ### 附上下文取得
@@ -91,6 +101,8 @@ daizo-cli gretil-search --query "yoga" --max-results 10
 daizo-cli cbeta-fetch --id T0858 --part 1 --max-chars 4000 --json
 daizo-cli tipitaka-fetch --id s0101m.mul --max-chars 2000 --json
 daizo-cli gretil-fetch --id buddhacarita --max-chars 4000 --json
+daizo-cli sarit-fetch --id asvaghosa-buddhacarita --max-chars 4000 --json
+daizo-cli muktabodha-fetch --id "<file-stem>" --max-chars 4000 --json
 
 # 行號上下文（搜尋後）
 daizo-cli cbeta-fetch --id T0858 --line-number 342 --context-before 10 --context-after 200
@@ -109,13 +121,20 @@ daizo-cli update --yes              # 重新安裝 CLI
 
 ## MCP 工具
 
+核心：
+- `daizo_version`（伺服器版本/建置資訊）
+- `daizo_usage`（AI 用戶端使用指南；低代幣流程）
+- `daizo_profile`（工具呼叫的簡易效能量測）
+
 解決：
-- `daizo_resolve`（將標題/別名/ID 解析為跨語料庫的候選 ID 與建議下一步 fetch 呼叫）
+- `daizo_resolve`（將標題/別名/ID 解析為跨語料庫的候選 ID 與建議下一步 fetch 呼叫；範圍：cbeta/tipitaka/gretil/sarit/muktabodha）
 
 搜尋：
 - `cbeta_title_search`, `cbeta_search`
 - `tipitaka_title_search`, `tipitaka_search`
 - `gretil_title_search`, `gretil_search`
+- `sarit_title_search`, `sarit_search`
+- `muktabodha_title_search`, `muktabodha_search`
 - `sat_search`
 - `jozen_search`
 - `tibetan_search`（藏文線上全文搜尋；`sources:["buda","adarshah"]`，BUDA 支援 `exact` 短語搜尋，Adarshah 支援 `wildcard`，`maxSnippetChars` 控制片段長度）
@@ -124,8 +143,13 @@ daizo-cli update --yes              # 重新安裝 CLI
 - `cbeta_fetch`（支援 `lb`, `lineNumber`, `contextBefore`, `contextAfter`, `headQuery`, `headIndex`, `format:"plain"`, `focusHighlight`；`plain` 會移除 XML 標籤、解決 gaiji、排除 `teiHeader`，並保留換行；`focusHighlight` 會跳到第一個高亮匹配附近）
 - `tipitaka_fetch`（支援 `lineNumber`, `contextBefore`, `contextAfter`）
 - `gretil_fetch`（支援 `lineNumber`, `contextBefore`, `contextAfter`）
-- `sat_fetch`, `sat_pipeline`
+- `sarit_fetch`（支援 `lineNumber`, `contextBefore`, `contextAfter`）
+- `muktabodha_fetch`（支援 `lineNumber`, `contextBefore`, `contextAfter`）
+- `sat_fetch`, `sat_detail`, `sat_pipeline`
 - `jozen_fetch`（以 `lineno` 擷取單頁；回傳格式為 `[J..] ...`）
+
+管線：
+- `cbeta_pipeline`, `gretil_pipeline`, `sarit_pipeline`, `muktabodha_pipeline`, `sat_pipeline`（若要先摘要，建議 `autoFetch=false`）
 
 ## 低代幣用法（AI 用戶端）
 
@@ -138,6 +162,8 @@ daizo-cli update --yes              # 重新安裝 CLI
 | CBETA | `T` + 4 位數字 | `cbeta_fetch({id: "T0262"})` |
 | Tipitaka | `DN`, `MN`, `SN`, `AN`, `KN` + 數字 | `tipitaka_fetch({id: "DN1"})` |
 | GRETIL | 梵文文本名稱 | `gretil_fetch({id: "saddharmapuNDarIka"})` |
+| SARIT | TEI 檔名 stem | `sarit_fetch({id: "asvaghosa-buddhacarita"})` |
+| MUKTABODHA | 檔名 stem | `muktabodha_fetch({id: "FILE_STEM"})` |
 
 ### 常用 ID 參考
 
@@ -176,6 +202,8 @@ daizo-cli update --yes              # 重新安裝 CLI
 - CBETA: https://github.com/cbeta-org/xml-p5
 - Tipitaka（羅馬化）: https://github.com/VipassanaTech/tipitaka-xml
 - GRETIL（梵文 TEI）: https://gretil.sub.uni-goettingen.de/
+- SARIT（TEI P5）: https://github.com/sarit/SARIT-corpus
+- MUKTABODHA（梵文；本機檔案）: 將文本放在 `$DAIZO_DIR/MUKTABODHA/`
 - SAT（線上）: wrap7 / detail 端點
 - 浄土宗全書（線上）: jodoshuzensho.jp
 - BUDA/BDRC（藏文線上）: library.bdrc.io / autocomplete.bdrc.io
@@ -184,7 +212,7 @@ daizo-cli update --yes              # 重新安裝 CLI
 ## 目錄與環境變數
 
 - `DAIZO_DIR`（預設：`~/.daizo`）
-  - 資料：`xml-p5/`, `tipitaka-xml/romn/`, `GRETIL/`, `SARIT-corpus/`
+  - 資料：`xml-p5/`, `tipitaka-xml/romn/`, `GRETIL/`, `SARIT-corpus/`, `MUKTABODHA/`
   - 快取：`cache/`
   - 二進位：`bin/`
 - `DAIZO_DEBUG=1` 啟用簡易 MCP 除錯日誌

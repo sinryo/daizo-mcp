@@ -270,7 +270,7 @@ fn handle_initialize(id: serde_json::Value) -> serde_json::Value {
 fn tools_list() -> Vec<serde_json::Value> {
     vec![
         tool("daizo_version", "Get daizo-mcp server version and build information. Use this to check compatibility and troubleshoot issues.", json!({"type":"object","properties":{}})),
-        tool("daizo_usage", "Usage guidance for AI: FAST PATH - use direct IDs! CBETA: T0001, T0262 (cbeta_fetch). Tipitaka: DN1, MN1 (tipitaka_fetch). GRETIL: saddharmapuNDarIka, vajracchedikA (gretil_fetch). No search needed when ID is known!", json!({"type":"object","properties":{}})),
+        tool("daizo_usage", "Usage guidance for AI (low-token). FAST PATH: use direct IDs when known. Local corpora: CBETA (T0001/T0262), Tipitaka (DN1/MN1), GRETIL (saddharmapuNDarIka), SARIT (file stem), MUKTABODHA (file stem). Online: SAT, JOZEN, Tibetan (tibetan_search).", json!({"type":"object","properties":{}})),
         tool("daizo_profile", "Run an in-process benchmark for a tool call and return timing stats (warm cache). Use for performance measurement.", json!({"type":"object","properties":{
             "tool":{"type":"string","description":"Tool name to call (e.g., cbeta_search, cbeta_fetch, daizo_resolve)."},
             "arguments":{"type":"object","description":"Arguments object passed to the tool."},
@@ -280,10 +280,10 @@ fn tools_list() -> Vec<serde_json::Value> {
         },"required":["tool","arguments"]})),
         tool("daizo_resolve", "Resolve a user query (title/alias/ID) to candidate corpus IDs and recommended next tool calls. Use this when you don't know which corpus/ID to use.", json!({"type":"object","properties":{
             "query":{"type":"string","description":"User query (title/alias/ID). Examples: '法華経', 'T0262', 'DN1', 'vajracchedikA'."},
-            "sources":{"type":"array","items":{"type":"string","enum":["cbeta","tipitaka","gretil","sarit"]},"description":"Search scope. Default: ['cbeta','tipitaka','gretil','sarit']."},
+            "sources":{"type":"array","items":{"type":"string","enum":["cbeta","tipitaka","gretil","sarit","muktabodha"]},"description":"Search scope. Default: ['cbeta','tipitaka','gretil','sarit','muktabodha']."},
             "limitPerSource":{"type":"number","description":"Max candidates per source (default: 5)"},
             "limit":{"type":"number","description":"Max total candidates (default: 10)"},
-            "preferSource":{"type":"string","description":"Optional bias: cbeta|tipitaka|gretil|sarit"},
+            "preferSource":{"type":"string","description":"Optional bias: cbeta|tipitaka|gretil|sarit|muktabodha"},
             "minScore":{"type":"number","description":"Filter out candidates below this score (default: 0.1)"}
         },"required":["query"]})),
         tool("cbeta_fetch", "Retrieve CBETA text by ID/part. FAST: If Taisho number is known (e.g. T0001, T0262 for Lotus Sutra), use id directly without search. Supports low-cost slices via id+lb (preferred) or id+lineNumber (XML line). TIP: Always pass 'highlight' with search term when fetching context!", json!({"type":"object","properties":{
@@ -1912,7 +1912,7 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
             let version_info = json!({
                 "version": VERSION,
                 "name": "daizo-mcp",
-                "description": "MCP server for Buddhist scripture retrieval (CBETA, Tipitaka, GRETIL, SARIT, MUKTABODHA, SAT, JOZEN)",
+                "description": "MCP server for Buddhist scripture retrieval (CBETA, Tipitaka, GRETIL, SARIT, MUKTABODHA, SAT, JOZEN, Tibetan online search)",
                 "homepage": "https://github.com/sinryo/daizo-mcp",
                 "data_available": data_status,
                 "data_path": daizo_home().to_string_lossy(),
@@ -1929,7 +1929,8 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
                     "SARIT TEI P5 corpus",
                     "MUKTABODHA Sanskrit library (IAST)",
                     "SAT Database search",
-                    "Jodo Shu Zensho (浄土宗全書) search/fetch (online)"
+                    "Jodo Shu Zensho (浄土宗全書) search/fetch (online)",
+                    "Tibetan online full-text search (BUDA/BDRC, Adarshah)"
                 ]
             });
             return json!({
@@ -1942,7 +1943,88 @@ fn handle_call(id: serde_json::Value, params: &serde_json::Value) -> serde_json:
             });
         }
         "daizo_usage" => {
-            let guide = "Daizo usage guide:\n\n## FASTEST: Direct ID access (no search needed!)\n\n### CBETA (Chinese Buddhist Canon)\nIf you know the Taisho number, use cbeta_fetch with id directly:\n- T0001 = 長阿含經 (Dirghagama)\n- T0099 = 雜阿含經 (Samyuktagama)\n- T0125 = 增壹阿含經 (Ekottaragama)\n- T0262 = 妙法蓮華經 (Lotus Sutra)\n- T0235 = 金剛般若波羅蜜經 (Diamond Sutra)\n- T0251 = 般若波羅蜜多心經 (Heart Sutra)\n- T0945 = 大佛頂首楞嚴經 (Shurangama Sutra)\n- T2076 = 景德傳燈錄\n\nExample: cbeta_fetch({id: \"T0262\"}) - instant!\n\n### Tipitaka (Pāli Canon)\nUse Nikāya codes directly with tipitaka_fetch:\n- DN = Dīghanikāya (長部) - e.g., DN1, DN2\n- MN = Majjhimanikāya (中部) - e.g., MN1, MN2\n- SN = Saṃyuttanikāya (相応部) - e.g., SN1\n- AN = Aṅguttaranikāya (増支部) - e.g., AN1\n- KN = Khuddakanikāya (小部)\n\nExamples:\n- tipitaka_fetch({id: \"DN1\"}) - Brahmajāla Sutta (梵網経)\n- tipitaka_fetch({id: \"MN1\"}) - Mūlapariyāya Sutta\n- tipitaka_fetch({id: \"s0101m.mul\"}) - Direct file access\n\n### GRETIL (Sanskrit Texts)\nUse file stem directly with gretil_fetch:\n- saddharmapuNDarIka = 法華經 (Lotus Sutra)\n- vajracchedikA = 金剛般若經 (Diamond Sutra)\n- prajJApAramitAhRdayasUtra = 般若心經 (Heart Sutra)\n- azvaghoSa-buddhacarita = 佛所行讚 (Buddhacarita)\n- laGkAvatArasUtra = 楞伽經 (Lankavatara Sutra)\n- mahAparinirvANasUtra = 大般涅槃經 (Mahaparinirvana Sutra)\n\nExamples:\n- gretil_fetch({id: \"saddharmapuNDarIka\"}) - Lotus Sutra Sanskrit\n- gretil_fetch({id: \"vajracchedikA\"}) - Diamond Sutra Sanskrit\n- gretil_fetch({id: \"sa_azvaghoSa-buddhacarita\"}) - with sa_ prefix also works\n\n## If corpus/ID is unknown\n- Use daizo_resolve({query: \"法華経\"}) first, then follow _meta.pick.fetch.\n\n## Standard flow (when ID unknown)\n1. Use *_search -> read _meta.fetchSuggestions\n2. Call *_fetch with {id, lineNumber, contextBefore:3, contextAfter:10, highlight: \"検索語\", format:\"plain\"}\n3. IMPORTANT: Always include 'highlight' parameter with the search term!\n   - If lineNumber doesn't show expected text, the highlight ensures correct context\n   - Example: cbeta_fetch({id:\"T0279\", lineNumber:1650, highlight:\"金剛杵\", contextBefore:5, contextAfter:10, format:\"plain\"})\n4. Use *_pipeline only for multi-file summary; set autoFetch=false by default\n\n## Troubleshooting: If lineNumber doesn't work\n- ALWAYS pass 'highlight' param with search term for verification\n- Use larger contextBefore/contextAfter (e.g., 10-20 lines)\n- For very long texts, use part/juan parameter instead: cbeta_fetch({id:\"T0279\", part:\"001\"})";
+            let guide = r#"Daizo usage guide:
+
+## FASTEST: Direct ID access (no search needed!)
+
+### CBETA (Chinese Buddhist Canon)
+If you know the Taisho number, use cbeta_fetch with id directly:
+- T0001 = 長阿含經 (Dirghagama)
+- T0099 = 雜阿含經 (Samyuktagama)
+- T0125 = 增壹阿含經 (Ekottaragama)
+- T0262 = 妙法蓮華經 (Lotus Sutra)
+- T0235 = 金剛般若波羅蜜經 (Diamond Sutra)
+- T0251 = 般若波羅蜜多心經 (Heart Sutra)
+- T0945 = 大佛頂首楞嚴經 (Shurangama Sutra)
+- T2076 = 景德傳燈錄
+
+Example: cbeta_fetch({id: "T0262"}) - instant!
+
+### Tipitaka (Pāli Canon)
+Use Nikāya codes directly with tipitaka_fetch:
+- DN = Dīghanikāya (長部) - e.g., DN1, DN2
+- MN = Majjhimanikāya (中部) - e.g., MN1, MN2
+- SN = Saṃyuttanikāya (相応部) - e.g., SN1
+- AN = Aṅguttaranikāya (増支部) - e.g., AN1
+- KN = Khuddakanikāya (小部)
+
+Examples:
+- tipitaka_fetch({id: "DN1"}) - Brahmajāla Sutta (梵網経)
+- tipitaka_fetch({id: "MN1"}) - Mūlapariyāya Sutta
+- tipitaka_fetch({id: "s0101m.mul"}) - Direct file access
+
+### GRETIL (Sanskrit TEI)
+Use file stem directly with gretil_fetch:
+- saddharmapuNDarIka = 法華經 (Lotus Sutra)
+- vajracchedikA = 金剛般若經 (Diamond Sutra)
+- prajJApAramitAhRdayasUtra = 般若心經 (Heart Sutra)
+- azvaghoSa-buddhacarita = 佛所行讚 (Buddhacarita)
+- laGkAvatArasUtra = 楞伽經 (Lankavatara Sutra)
+- mahAparinirvANasUtra = 大般涅槃經 (Mahaparinirvana Sutra)
+
+Examples:
+- gretil_fetch({id: "saddharmapuNDarIka"}) - Lotus Sutra Sanskrit
+- gretil_fetch({id: "vajracchedikA"}) - Diamond Sutra Sanskrit
+- gretil_fetch({id: "sa_azvaghoSa-buddhacarita"}) - with sa_ prefix also works
+
+### SARIT (TEI P5)
+Use file stem directly with sarit_fetch:
+- sarit_fetch({id: "asvaghosa-buddhacarita"})
+
+### MUKTABODHA (Sanskrit library; local files)
+Use file stem directly with muktabodha_fetch:
+- muktabodha_fetch({id: "<file-stem>"})
+
+## Online sources (no local data needed)
+
+### SAT Database (online)
+Flow: sat_search -> sat_detail/sat_fetch (prefer useid)
+- sat_search({query: "法華経", exact: true})
+- sat_detail({useid: "..."})  # use startid/useid from SAT search
+
+### Jodo Shu Zensho (浄土宗全書, online)
+Flow: jozen_search -> jozen_fetch (lineno)
+- jozen_search({query: "薬師"})
+- jozen_fetch({lineno: "J01_0200B19"})
+
+### Tibetan full-text search (online)
+- tibetan_search({query: "བདེ་བ", sources: ["buda","adarshah"], exact: true})
+  - Tibetan Unicode or EWTS/Wylie accepted (best-effort auto-conversion)
+
+## If corpus/ID is unknown
+- Use daizo_resolve({query: "法華経"}) first, then follow the recommended fetch calls.
+
+## Standard flow (when ID unknown)
+1. Use *_search -> read _meta.fetchSuggestions
+2. Call *_fetch with {id, lineNumber, contextBefore:1, contextAfter:3, highlight:"検索語", format:"plain"}
+3. IMPORTANT: Always include 'highlight' parameter with the search term!
+4. Use *_pipeline only for multi-file summary; set autoFetch=false by default
+
+## Troubleshooting: If lineNumber doesn't work
+- ALWAYS pass 'highlight' param with search term for verification
+- Use larger contextBefore/contextAfter (e.g., 10-20 lines)
+- For very long texts, use part/juan parameter instead (CBETA): cbeta_fetch({id:"T0279", part:"001"})
+"#;
             return json!({
                 "jsonrpc":"2.0",
                 "id": id,
